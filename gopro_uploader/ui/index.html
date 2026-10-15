@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>GoPro → YouTube</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --line: #dfe3e8; --text: #1d2228; --muted: #6b7480;
+  --accent: #d93025; --accent2: #1a73e8; --ok: #188038; --warn: #b06000; --sel: #e8f0fe;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16181b; --panel: #1f2226; --line: #33383e; --text: #e6e8eb; --muted: #9aa2ab;
+          --sel: #23324a; --accent2: #8ab4f8; --ok: #81c995; --warn: #fdd663; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { font: 13px/1.4 "Segoe UI", "Microsoft JhengHei UI", sans-serif; background: var(--bg); color: var(--text);
+       display: grid; grid-template-rows: auto 1fr auto; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { border-color: var(--accent2); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+label.f { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+label.f > * { font-size: 13px; color: var(--text); }
+
+header { display: flex; gap: 10px; align-items: flex-end; padding: 10px 14px; background: var(--panel);
+         border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header .folder { flex: 1 1 260px; min-width: 200px; }
+header .folder input { width: 100%; }
+.account { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.account .ch { color: var(--ok); font-weight: 600; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 32vw, 460px); min-height: 0; }
+.tablewrap { overflow: auto; min-height: 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--bg); font-weight: 600; font-size: 12px; color: var(--muted); z-index: 1; }
+tr.row { cursor: pointer; }
+tr.row:hover { background: color-mix(in srgb, var(--sel) 50%, transparent); }
+tr.row.sel { background: var(--sel); }
+tr.row.done td { color: var(--muted); }
+td.title input { border-color: transparent; background: transparent; width: 170px; padding: 2px 4px; }
+td.title input:focus { border-color: var(--accent2); background: var(--panel); }
+td.title input.locked { font-weight: 600; }
+td.files { font-family: Consolas, monospace; font-size: 12px; }
+td.place { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
+.tag.gps { color: var(--ok); border-color: var(--ok); }
+.tag.nearby, .tag.manual { color: var(--warn); border-color: var(--warn); }
+.st { font-size: 12px; }
+.st.uploaded { color: var(--ok); }
+.st.error { color: var(--accent); }
+.st.uploading, .st.merging { color: var(--accent2); }
+.bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 3px; width: 90px; }
+.bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
+.empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+
+aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: 1fr auto; min-height: 0; background: var(--panel); }
+#map { min-height: 260px; }
+.detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); max-height: 52vh; overflow: auto; }
+.detail h3 { margin: 0; font-size: 13px; }
+.detail .row2 { display: flex; gap: 6px; }
+.detail .row2 > * { flex: 1; }
+.results { display: flex; flex-direction: column; gap: 2px; }
+.results button { text-align: left; border: none; padding: 4px 6px; }
+.results small { color: var(--muted); display: block; }
+.hint { color: var(--muted); font-size: 12px; }
+.pickmode #map { cursor: crosshair; outline: 3px solid var(--accent2); outline-offset: -3px; }
+
+footer { background: var(--panel); border-top: 1px solid var(--line); }
+.actions { display: flex; gap: 10px; align-items: center; padding: 8px 14px; flex-wrap: wrap; }
+.actions .summary { color: var(--muted); }
+.actions .spacer { flex: 1; }
+#log { height: 110px; overflow: auto; font-family: Consolas, monospace; font-size: 12px; padding: 6px 14px;
+       border-top: 1px solid var(--line); white-space: pre-wrap; color: var(--muted); }
+#log .error { color: var(--accent); }
+#log a { color: var(--accent2); }
+
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); width: 520px; max-width: 92vw; padding: 18px; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+dialog .full { grid-column: 1 / -1; }
+dialog h2 { margin: 0 0 12px; font-size: 16px; }
+dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.check { display: flex; gap: 6px; align-items: center; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; place-items: center; z-index: 9999; }
+.overlay.on { display: grid; }
+.overlay div { background: var(--panel); padding: 16px 22px; border-radius: 10px; border: 1px solid var(--line); min-width: 280px; }
+</style>
+</head>
+<body>
+<header>
+  <label class="f folder">影片資料夾
+    <div style="display:flex;gap:6px">
+      <input id="folder" placeholder="選擇 GoPro 影片所在的資料夾" readonly>
+      <button id="btnPick">選擇…</button>
+      <button id="btnScan" disabled>重新掃描</button>
+    </div>
+  </label>
+  <label class="f">播放清單
+    <input id="playlist" list="playlists" style="width:150px">
+    <datalist id="playlists"></datalist>
+  </label>
+  <label class="f">旅程時區（標題用）
+    <select id="trip_tz"></select>
+  </label>
+  <label class="f">標題格式
+    <select id="title_format"></select>
+  </label>
+  <button id="btnSettings">設定</button>
+  <div class="account">
+    <span id="channel" class="hint">尚未登入 YouTube</span>
+    <button id="btnSignIn">登入</button>
+  </div>
+</header>
+
+<main>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" id="chkAll" title="全選要上傳的"></th>
+        <th>狀態</th><th>標題</th><th>原始檔</th><th>長度</th><th>大小</th><th>時間</th><th>地點</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty">選擇資料夾後會列出影片。<br>GoPro 長片被切成的多個分段（GX01…、GX02…）會自動歸成同一段錄影。</div>
+  </div>
+  <aside>
+    <div id="map"></div>
+    <div class="detail" id="detail">
+      <div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <div class="actions">
+    <span class="summary" id="summary"></span>
+    <span id="offset" class="hint"></span>
+    <span class="spacer"></span>
+    <button id="btnGeocode" disabled>查詢地名</button>
+    <button id="btnCancel" disabled>停止</button>
+    <button id="btnUpload" class="primary" disabled>開始上傳</button>
+  </div>
+  <div id="log"></div>
+</footer>
+
+<dialog id="dlgSettings">
+  <h2>設定</h2>
+  <div class="grid">
+    <label class="f">相機時鐘時區
+      <select id="camera_tz"></select>
+    </label>
+    <label class="f">上傳時的瀏覽權限
+      <select id="privacy">
+        <option value="unlisted">非公開 (unlisted)</option>
+        <option value="private">私人 (private)</option>
+        <option value="public">公開 (public)</option>
+      </select>
+    </label>
+    <label class="f full">說明欄範本（{files} = 原始檔名，{place} = 地點）
+      <textarea id="description_template" rows="3"></textarea>
+    </label>
+    <label class="f">地名語言
+      <select id="geocode_lang">
+        <option value="zh-TW,ja">繁中優先，其次日文</option>
+        <option value="ja">日文</option>
+        <option value="en">English</option>
+        <option value="zh-TW,en">繁中優先，其次英文</option>
+      </select>
+    </label>
+    <div></div>
+    <label class="check full"><input type="checkbox" id="merge_chapters"> 分段影片先無損合併成一支再上傳 <span id="ffmpegState" class="hint"></span></label>
+    <label class="check full"><input type="checkbox" id="delete_merged"> 上傳成功後刪除合併出來的暫存檔（原始檔永遠不動）</label>
+    <div class="full hint">類別固定為「旅遊與活動」，並自動設定：非為兒童打造、無付費宣傳、非 AI 合成內容。</div>
+    <div class="full" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button id="btnSecret">匯入 client_secret.json</button>
+      <span id="secretState" class="hint" style="align-self:center"></span>
+    </div>
+    <div class="full" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button data-open="data">開啟資料夾</button>
+      <button data-open="history">上傳紀錄 (CSV)</button>
+      <button data-open="log">本次執行紀錄</button>
+      <button id="btnSignOut">登出 YouTube</button>
+    </div>
+  </div>
+  <div class="btns"><button id="btnCloseSettings">取消</button><button class="primary" id="btnSaveSettings">儲存</button></div>
+</dialog>
+
+<div class="overlay" id="busy"><div id="busyText">處理中…</div></div>
+
+<script>
+const TZS = ["Asia/Tokyo","Asia/Taipei","Asia/Seoul","Asia/Hong_Kong","Asia/Shanghai","Asia/Singapore",
+  "Asia/Bangkok","Asia/Ho_Chi_Minh","Asia/Kuala_Lumpur","Asia/Manila","Asia/Dubai","Europe/London",
+  "Europe/Paris","Europe/Berlin","Europe/Rome","America/New_York","America/Chicago","America/Denver",
+  "America/Los_Angeles","Pacific/Honolulu","Australia/Sydney","Pacific/Auckland","UTC"];
+const $ = s => document.querySelector(s);
+let api, S = {}, items = [], selected = new Set(), lastClicked = null, uploading = false, pickMode = false;
+let map, layers = {};
+
+const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(0) + " MB";
+const fmtDur = s => { s = Math.round(s); const m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(s%60).padStart(2,"0")}` : `${m}:${String(s%60).padStart(2,"0")}`; };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const STATUS = { pending: "待上傳", uploading: "上傳中", merging: "合併中", uploaded: "已上傳", error: "失敗", partial: "部分完成" };
+const TSRC = { gps: "GPS", "camera+gps_offset": "相機+GPS校正", camera: "相機時鐘", file_mtime: "檔案時間" };
+const LSRC = { gps: "GPS", nearby: "推測", manual: "手動" };
+
+function log(msg, level) {
+  const el = $("#log"), line = document.createElement("div");
+  if (level === "error") line.className = "error";
+  line.innerHTML = esc(new Date().toLocaleTimeString() + "  " + msg).replace(/(https:\/\/youtu\.be\/[\w-]+)/g, '<a href="$1" target="_blank">$1</a>');
+  el.appendChild(line); el.scrollTop = el.scrollHeight;
+}
+function busy(text) { $("#busy").classList.toggle("on", !!text); if (text) $("#busyText").textContent = text; }
+async function call(name, ...args) {
+  try { return await api[name](...args); }
+  catch (e) { log(`${name} 失敗：${e.message || e}`, "error"); busy(null); throw e; }
+}
+
+window.onEvent = ev => {
+  if (ev.type === "log") log(ev.msg, ev.level);
+  else if (ev.type === "scan") busy(`讀取中 ${ev.i} / ${ev.n}：${ev.name}`);
+  else if (ev.type === "geocode") busy(`查詢地名 ${ev.i} / ${ev.n}：${ev.place}`);
+  else if (ev.type === "item" || ev.type === "progress") {
+    const it = items.find(x => x.id === ev.id); if (!it) return;
+    if (ev.status) it.status = ev.status;
+    if (ev.video_ids) it.video_ids = ev.video_ids;
+    if (ev.error) it.error = ev.error;
+    if (ev.type === "progress") { it.status = "uploading"; it.progress = ev; }
+    updateStatusCell(it);
+  } else if (ev.type === "done") {
+    uploading = false; log(ev.msg, ev.level); refreshButtons(); render();
+  }
+};
+
+function setPlan(res) {
+  items = res.items;
+  for (const id of [...selected]) if (!items.find(i => i.id === id)) selected.delete(id);
+  $("#offset").textContent = res.camera_offset_hours != null
+    ? `相機時鐘比 UTC 快 ${res.camera_offset_hours} 小時（由 GPS 自動偵測）` : "";
+  render(); drawMap(); renderDetail();
+}
+
+function statusHtml(it) {
+  let h = `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
+  if (it.status === "uploading" && it.progress) {
+    const p = it.progress, pct = p.total ? (100 * p.done / p.total) : 0;
+    h += `${p.parts > 1 ? ` ${p.part}/${p.parts}` : ""} ${pct.toFixed(0)}%<div class="bar"><div style="width:${pct}%"></div></div>`;
+  }
+  if (it.status === "uploaded" && it.video_ids?.length)
+    h += " " + it.video_ids.map(v => `<a href="https://youtu.be/${v}" target="_blank">▶</a>`).join(" ");
+  if (it.status === "error" && it.error) h += ` <span title="${esc(it.error)}">ⓘ</span>`;
+  return h;
+}
+function updateStatusCell(it) {
+  const td = document.querySelector(`tr[data-id="${CSS.escape(it.id)}"] td.status`);
+  if (td) td.innerHTML = statusHtml(it); else render();
+  summary();
+}
+
+function render() {
+  const tb = $("#rows");
+  $("#empty").style.display = items.length ? "none" : "";
+  tb.innerHTML = items.map(it => `
+    <tr class="row ${selected.has(it.id) ? "sel" : ""} ${it.status === "uploaded" ? "done" : ""}" data-id="${esc(it.id)}">
+      <td><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
+      <td class="status">${statusHtml(it)}</td>
+      <td class="title"><input value="${esc(it.title)}" class="${it.title_locked ? "locked" : ""}" title="${it.title_locked ? "已手動修改；清空可恢復自動標題" : "自動產生，可直接修改"}" ${uploading ? "disabled" : ""}></td>
+      <td class="files" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? ` <span class="tag">${it.files.length} 段</span>` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</td>
+      <td>${fmtDur(it.duration)}</td>
+      <td>${fmtSize(it.size)}</td>
+      <td><span class="tag ${it.time_source === "gps" ? "gps" : ""}">${TSRC[it.time_source] || it.time_source}</span></td>
+      <td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>
+    </tr>`).join("");
+  summary(); refreshButtons();
+}
+
+function summary() {
+  const inc = items.filter(i => i.include && i.status !== "uploaded");
+  const done = items.filter(i => i.status === "uploaded").length;
+  $("#summary").textContent = items.length
+    ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）` : "";
+  $("#chkAll").checked = items.length && items.every(i => i.include);
+}
+function refreshButtons() {
+  const has = items.length > 0;
+  $("#btnScan").disabled = !S.last_folder || uploading;
+  $("#btnPick").disabled = uploading;
+  $("#btnGeocode").disabled = !has || uploading || !items.some(i => i.lat != null && !i.place);
+  $("#btnUpload").disabled = !has || uploading || !items.some(i => i.include && i.status !== "uploaded");
+  $("#btnCancel").disabled = !uploading;
+}
+
+// ---------------------------------------------------------------- table events
+$("#rows").addEventListener("click", e => {
+  const tr = e.target.closest("tr.row"); if (!tr || e.target.matches("input, a")) return;
+  const id = tr.dataset.id, ids = items.map(i => i.id);
+  if (e.shiftKey && lastClicked) {
+    const [a, b] = [ids.indexOf(lastClicked), ids.indexOf(id)].sort((x, y) => x - y);
+    if (!e.ctrlKey) selected.clear();
+    ids.slice(a, b + 1).forEach(x => selected.add(x));
+  } else if (e.ctrlKey) { selected.has(id) ? selected.delete(id) : selected.add(id); lastClicked = id; }
+  else { selected = new Set([id]); lastClicked = id; }
+  document.querySelectorAll("tr.row").forEach(r => r.classList.toggle("sel", selected.has(r.dataset.id)));
+  drawMap(true); renderDetail();
+});
+$("#rows").addEventListener("change", async e => {
+  const tr = e.target.closest("tr.row"); if (!tr) return;
+  const id = tr.dataset.id;
+  if (e.target.classList.contains("inc")) setPlan(await call("edit", [id], { include: e.target.checked }));
+  else if (e.target.closest("td.title")) setPlan(await call("edit", [id], { title: e.target.value.trim() || null }));
+});
+$("#chkAll").addEventListener("change", async e => {
+  setPlan(await call("edit", items.filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));
+});
+
+// ------------------------------------------------------------------------- map
+function initMap() {
+  map = L.map("map", { zoomControl: true }).setView([35.68, 139.76], 5);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+  map.on("click", async e => {
+    if (!pickMode || !selected.size) return;
+    await applyLocation(e.latlng.lat, e.latlng.lng, null);
+  });
+}
+function drawMap(fitSelection) {
+  Object.values(layers).forEach(l => map.removeLayer(l)); layers = {};
+  const pts = [];
+  for (const it of items) {
+    if (it.lat == null) continue;
+    const sel = selected.has(it.id);
+    const g = L.layerGroup();
+    if (it.track.length > 1) L.polyline(it.track, { color: sel ? "#d93025" : "#1a73e8", weight: sel ? 4 : 2, opacity: sel ? .9 : .45 }).addTo(g);
+    L.circleMarker([it.lat, it.lon], { radius: sel ? 8 : 5, color: "#fff", weight: 1.5,
+      fillColor: sel ? "#d93025" : (it.loc_source === "gps" ? "#1a73e8" : "#e8a33d"), fillOpacity: 1 })
+      .bindTooltip(`${esc(it.title)}<br>${esc(it.place || "")}`).on("click", () => {
+        selected = new Set([it.id]); lastClicked = it.id; render(); drawMap(); renderDetail();
+        document.querySelector(`tr[data-id="${CSS.escape(it.id)}"]`)?.scrollIntoView({ block: "nearest" });
+      }).addTo(g);
+    g.addTo(map); layers[it.id] = g;
+    if (!fitSelection || sel) pts.push([it.lat, it.lon], ...it.track);
+  }
+  if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.15), { maxZoom: 16 });
+}
+
+// ---------------------------------------------------------------------- detail
+function renderDetail() {
+  const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
+  if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>'; setPick(false); return; }
+  const one = sel.length === 1 ? sel[0] : null;
+  d.innerHTML = `
+    <h3>${one ? esc(one.title) : `已選 ${sel.length} 段錄影`}</h3>
+    ${one ? `<div class="hint">${esc(one.local)}（${TSRC[one.time_source]}）· ${esc(one.files.join(" + "))}</div>` : ""}
+    <label class="f">地點名稱（會寫入 YouTube 的拍攝地點說明）
+      <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "" : "輸入後套用到全部已選的錄影"}">
+    </label>
+    <div class="row2"><button id="btnPlaceSave">套用名稱</button><button id="btnPickMap">${pickMode ? "取消地圖點選" : "在地圖上點選位置"}</button></div>
+    <label class="f">搜尋地點
+      <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱" style="flex:1"><button id="btnSearch">搜尋</button></div>
+    </label>
+    <div class="results" id="results"></div>
+    <div class="row2"><button id="btnResetLoc">恢復 GPS / 自動地點</button></div>`;
+  $("#btnPlaceSave").onclick = async () => {
+    const v = $("#placeInput").value.trim();
+    setPlan(await call("edit", [...selected], { place: v || null }));
+  };
+  $("#btnPickMap").onclick = () => { setPick(!pickMode); renderDetail(); };
+  $("#btnResetLoc").onclick = async () => setPlan(await call("edit", [...selected], { lat: null, lon: null, place: null }));
+  const doSearch = async () => {
+    const q = $("#searchQ").value.trim(); if (!q) return;
+    $("#results").innerHTML = '<span class="hint">搜尋中…</span>';
+    const c = map.getCenter();
+    const rs = await call("search_place", q, c.lat, c.lng);
+    $("#results").innerHTML = rs.length ? rs.map((r, i) => `<button data-i="${i}">${esc(r.place)}<small>${esc(r.full)}</small></button>`).join("") : '<span class="hint">找不到</span>';
+    $("#results").querySelectorAll("button").forEach(b => b.onclick = () => {
+      const r = rs[+b.dataset.i]; applyLocation(r.lat, r.lon, r.place);
+    });
+  };
+  $("#btnSearch").onclick = doSearch;
+  $("#searchQ").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+}
+function setPick(on) { pickMode = on; document.body.classList.toggle("pickmode", on); }
+async function applyLocation(lat, lon, place) {
+  const fields = { lat, lon };
+  fields.place = place ?? null;
+  setPlan(await call("edit", [...selected], fields));
+  if (place == null) {  // map click: look up the name
+    busy("查詢地名…"); setPlan(await call("geocode_all")); busy(null);
+  }
+  setPick(false); renderDetail();
+}
+
+// --------------------------------------------------------------------- header
+function fillSelect(sel, values, labels) {
+  sel.innerHTML = values.map((v, i) => `<option value="${esc(v)}">${esc(labels ? labels[i] : v)}</option>`).join("");
+}
+function loadSettingsUI() {
+  $("#folder").value = S.last_folder || "";
+  $("#playlist").value = S.playlist;
+  $("#playlists").innerHTML = (S.recent_playlists || []).map(p => `<option value="${esc(p)}">`).join("");
+  $("#trip_tz").value = S.trip_tz;
+  $("#title_format").value = S.title_format;
+}
+async function saveSettings(values) {
+  const res = await call("save_settings", values);
+  S = res.settings; loadSettingsUI(); if (items.length) setPlan(res);
+}
+$("#playlist").addEventListener("change", e => saveSettings({ playlist: e.target.value.trim() }));
+$("#trip_tz").addEventListener("change", e => saveSettings({ trip_tz: e.target.value }));
+$("#title_format").addEventListener("change", e => saveSettings({ title_format: e.target.value }));
+
+async function doScan(folder) {
+  busy("掃描中…");
+  try { const res = await call("scan", folder); S.last_folder = folder; $("#folder").value = folder; selected.clear(); setPlan(res); }
+  finally { busy(null); }
+}
+$("#btnPick").onclick = async () => { const f = await call("pick_folder"); if (f) doScan(f); };
+$("#btnScan").onclick = () => doScan(S.last_folder);
+$("#btnGeocode").onclick = async () => { busy("查詢地名…"); try { setPlan(await call("geocode_all")); } finally { busy(null); } };
+$("#btnUpload").onclick = async () => {
+  const n = items.filter(i => i.include && i.status !== "uploaded").length;
+  if (!confirm(`要上傳 ${n} 段錄影到播放清單「${S.playlist}」嗎？`)) return;
+  uploading = true; render(); await call("start_upload");
+};
+$("#btnCancel").onclick = () => call("cancel");
+
+$("#btnSignIn").onclick = async () => {
+  if (!INIT.has_secret) { log("請先到「設定」匯入 Google Cloud 下載的 client_secret.json（步驟見 README）", "error"); openSettings(); return; }
+  busy("請在瀏覽器完成 Google 登入…");
+  try { setChannel(await call("sign_in")); } finally { busy(null); }
+};
+function setChannel(name) {
+  $("#channel").textContent = name ? name : "尚未登入 YouTube";
+  $("#channel").className = name ? "ch" : "hint";
+  $("#btnSignIn").textContent = name ? "切換帳號" : "登入";
+}
+
+// ------------------------------------------------------------------- settings
+function openSettings() {
+  $("#camera_tz").value = S.camera_tz; $("#privacy").value = S.privacy;
+  $("#description_template").value = S.description_template; $("#geocode_lang").value = S.geocode_lang;
+  $("#merge_chapters").checked = S.merge_chapters; $("#delete_merged").checked = S.delete_merged;
+  $("#ffmpegState").textContent = INIT.ffmpeg ? "" : "（找不到 ffmpeg，會改成分開上傳）";
+  $("#secretState").textContent = INIT.has_secret ? "✓ 已設定" : "尚未設定";
+  $("#dlgSettings").showModal();
+}
+$("#btnSettings").onclick = openSettings;
+$("#btnCloseSettings").onclick = () => $("#dlgSettings").close();
+$("#btnSaveSettings").onclick = async () => {
+  await saveSettings({ camera_tz: $("#camera_tz").value, privacy: $("#privacy").value,
+    description_template: $("#description_template").value || "{files}", geocode_lang: $("#geocode_lang").value,
+    merge_chapters: $("#merge_chapters").checked, delete_merged: $("#delete_merged").checked });
+  $("#dlgSettings").close();
+};
+$("#btnSecret").onclick = async () => { if (await call("pick_client_secret")) { INIT.has_secret = true; $("#secretState").textContent = "✓ 已設定"; } };
+$("#btnSignOut").onclick = async () => { await call("sign_out"); setChannel(null); };
+document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => call("open_path", b.dataset.open));
+
+// ----------------------------------------------------------------------- boot
+let INIT;
+window.addEventListener("pywebviewready", async () => {
+  api = window.pywebview.api;
+  fillSelect($("#trip_tz"), TZS);
+  fillSelect($("#camera_tz"), ["auto", ...TZS], ["自動（用 GPS 時間校正）", ...TZS.map(t => `相機設定為 ${t}`)]);
+  INIT = await call("init");
+  S = INIT.settings;
+  fillSelect($("#title_format"), Object.keys(INIT.title_formats), Object.values(INIT.title_formats));
+  loadSettingsUI(); setChannel(INIT.channel); initMap(); refreshButtons();
+  log(`資料與紀錄存放在 ${INIT.app_dir}`);
+  if (!INIT.has_secret) log("第一次使用：請先在「設定」匯入 client_secret.json，再按「登入」。");
+});
+</script>
+</body>
+</html>

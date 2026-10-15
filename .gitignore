@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec
+
+# Google OAuth secrets and tokens must never be committed
+client_secret*.json
+token*.json
+
+# Personal / machine-only notes and design-conversation logs (contain email / local paths)
+CLAUDE.local.md
+docs/conversation/

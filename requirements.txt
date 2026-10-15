@@ -1,0 +1,6 @@
+pywebview>=6.0
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+tzdata
+imageio-ffmpeg>=0.5
+pytest
