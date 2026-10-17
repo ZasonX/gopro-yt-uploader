@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import os
+import sys
 import threading
 from datetime import datetime
 
@@ -55,6 +56,14 @@ class Store:
 
 def setup_logging() -> str:
     log_file = config.path("logs", datetime.now().strftime("%Y%m%d-%H%M%S.log"))
-    logging.basicConfig(level=logging.INFO, filename=log_file, encoding="utf-8",
+    # file for the record, stderr so a terminal launch shows scan/upload progress
+    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
+    if sys.stderr is not None:  # None under pythonw.exe (run.bat)
+        try:  # a cp950 pipe must not choke on Japanese place names
+            sys.stderr.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+        handlers.append(logging.StreamHandler(sys.stderr))
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return log_file

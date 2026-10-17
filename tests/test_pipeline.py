@@ -1,8 +1,9 @@
+import os
 from datetime import datetime, timezone
 
 import pytest
 
-from gopro_uploader import config
+from gopro_uploader import config, scanner
 from gopro_uploader.mp4meta import parse_gpmf_gps, read_mp4
 from gopro_uploader.planner import build_plan
 from gopro_uploader.scanner import group_key, scan
@@ -85,6 +86,63 @@ def test_camera_clock_in_taiwan_time_is_corrected(tmp_path):
     make_mp4(tmp_path / "GX010002.MP4", tw_cam.replace(minute=50), 4.0, [])
     items = build_plan(scan(str(tmp_path)), config.Settings(), {})
     assert [i["title"] for i in items] == ["2026-03-15 14:32", "2026-03-15 14:50"]
+
+
+@pytest.fixture
+def count_parses(monkeypatch):
+    calls = []
+
+    def counting(path):
+        calls.append(os.path.basename(path))
+        return read_mp4(path)
+
+    monkeypatch.setattr(scanner, "read_mp4", counting)
+    return calls
+
+
+def test_scan_cache_hit_skips_parsing(tmp_path, count_parses):
+    vids = tmp_path / "vids"
+    vids.mkdir()
+    make_mp4(vids / "GX010001.MP4", CAM, 4.0, [gps5_payload(*SAMPLE_PLACE, "260315053210.000")] * 4)
+    make_mp4(vids / "GX010002.MP4", CAM.replace(minute=50), 4.0, [])
+    first = scan(str(vids))
+    assert sorted(count_parses) == ["GX010001.MP4", "GX010002.MP4"]
+    assert os.path.exists(config.path("scan_cache.json"))
+
+    count_parses.clear()
+    second = scan(str(vids))
+    assert count_parses == []
+    assert [c.info for r in second for c in r.clips] == [c.info for r in first for c in r.clips]
+    assert second[0].clips[0].info.first_fix.utc == datetime(2026, 3, 15, 5, 32, 10, tzinfo=timezone.utc)
+
+
+def test_scan_cache_reparses_changed_file(tmp_path, count_parses):
+    vids = tmp_path / "vids"
+    vids.mkdir()
+    a, b = vids / "GX010001.MP4", vids / "GX010002.MP4"
+    make_mp4(a, CAM, 4.0, [])
+    make_mp4(b, CAM.replace(minute=50), 4.0, [])
+    scan(str(vids))
+
+    # a: different content and size; b: same bytes, only mtime changes
+    make_mp4(a, CAM.replace(minute=10), 8.0, [gps5_payload(*SAMPLE_PLACE, "260315053210.000")] * 4)
+    st = os.stat(b)
+    os.utime(b, (st.st_atime, st.st_mtime + 10))
+    count_parses.clear()
+    recs = scan(str(vids))
+    assert sorted(count_parses) == ["GX010001.MP4", "GX010002.MP4"]
+    assert recs[0].clips[0].info.duration == 8.0
+
+
+def test_scan_cache_corrupt_file_is_rebuilt(tmp_path, count_parses):
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    with open(config.path("scan_cache.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    scan(str(tmp_path))
+    assert count_parses == ["GX010001.MP4"]
+    count_parses.clear()
+    scan(str(tmp_path))
+    assert count_parses == []
 
 
 def test_overrides_and_duplicate_titles(tmp_path):
