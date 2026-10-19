@@ -59,8 +59,14 @@ td.place { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
 
-aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: 1fr auto; min-height: 0; background: var(--panel); }
-#map { min-height: 260px; }
+aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; background: var(--panel); }
+#map { min-height: 200px; }
+#preview { border-bottom: 1px solid var(--line); background: #000; }
+#preview:empty { display: none; }
+#preview video { display: block; width: 100%; max-height: 32vh; background: #000; }
+#preview .bar2 { display: flex; gap: 4px; align-items: center; padding: 4px 8px; background: var(--panel); flex-wrap: wrap; }
+#preview .bar2 button { padding: 2px 8px; font-size: 12px; }
+#preview .bar2 button.on { outline: 2px solid var(--accent2); }
 .detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); max-height: 52vh; overflow: auto; }
 .detail h3 { margin: 0; font-size: 13px; }
 .detail .row2 { display: flex; gap: 6px; }
@@ -130,6 +136,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <div id="empty" class="empty">選擇資料夾後會列出影片。<br>GoPro 長片被切成的多個分段（GX01…、GX02…）會自動歸成同一段錄影。</div>
   </div>
   <aside>
+    <div id="preview"></div>
     <div id="map"></div>
     <div class="detail" id="detail">
       <div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>
@@ -350,7 +357,37 @@ function drawMap(fitSelection) {
 }
 
 // ---------------------------------------------------------------------- detail
+// --------------------------------------------------------------------- preview
+let previewId = null;
+async function renderPreview() {
+  const id = selected.size === 1 ? [...selected][0] : null;
+  if (id === previewId) return;
+  previewId = id;
+  const box = $("#preview");
+  box.querySelector("video")?.pause();
+  box.innerHTML = "";
+  setTimeout(() => map.invalidateSize(), 0);  // the map's box changes with the player
+  if (!id) return;
+  const srcs = await call("preview_sources", id);
+  if (previewId !== id || !srcs.length) return;  // selection moved on while loading
+  const show = n => {
+    const s = srcs[n];
+    box.innerHTML = `<video controls preload="metadata" src="${esc(s.url)}"></video>
+      <div class="bar2">
+        ${srcs.length > 1 ? srcs.map((x, i) => `<button data-n="${i}" class="${i === n ? "on" : ""}">${i + 1}/${srcs.length}</button>`).join("") : ""}
+        <span class="hint">${esc(s.name)} · ${s.lrv ? "低解析度預覽（LRV）" : "原檔，若無法播放代表格式不支援（例如 HEVC）"}</span>
+      </div>`;
+    box.querySelector("video").onloadedmetadata = () => map.invalidateSize();
+    box.querySelector("video").onerror = () => {
+      box.querySelector(".hint").textContent = `${s.name} · 無法播放這個檔案（可能是 HEVC 格式且沒有 LRV 預覽檔）`;
+    };
+    box.querySelectorAll("button[data-n]").forEach(b => b.onclick = () => show(+b.dataset.n));
+  };
+  show(0);
+}
+
 function renderDetail() {
+  renderPreview();
   const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
   if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>'; setPick(false); return; }
   const one = sel.length === 1 ? sel[0] : null;

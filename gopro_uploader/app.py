@@ -9,7 +9,7 @@ import threading
 
 import webview
 
-from . import config, geocode, merge, youtube
+from . import config, geocode, merge, preview, youtube
 from .config import TITLE_FORMATS, Settings
 from .planner import build_plan, detect_camera_offset
 from .scanner import scan
@@ -35,6 +35,7 @@ class Api:
         self._yt = None
         self._cancel = False
         self._worker: threading.Thread | None = None
+        self._preview: preview.PreviewServer | None = None
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -128,6 +129,20 @@ class Api:
             except Exception as e:  # noqa: BLE001
                 self._say(f"地名查詢失敗 ({lat}, {lon})：{e}", "error")
         return self._replan()
+
+    def preview_sources(self, item_id: str):
+        """One playable URL per chapter, preferring the small .LRV proxy (H.264)."""
+        item = next((i for i in self._items if i["id"] == item_id), None)
+        if not item:
+            return []
+        if self._preview is None:
+            self._preview = preview.PreviewServer()
+        out = []
+        for name, path in zip(item["files"], item["paths"]):
+            lrv = preview.lrv_path(path)
+            out.append({"name": name, "lrv": lrv is not None,
+                        "url": self._preview.url_for(lrv or path)})
+        return out
 
     def search_place(self, query: str, lat=None, lon=None):
         near = (lat, lon) if lat is not None and lon is not None else None
