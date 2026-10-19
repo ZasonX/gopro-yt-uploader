@@ -48,7 +48,9 @@
 
 ### 4. 在程式裡匯入
 
-1. 雙擊 `run.bat` 啟動程式（第一次啟動會自動安裝套件，需要 1~2 分鐘）。
+1. 解壓縮下載的 `GoProYTUploader` 資料夾，雙擊裡面的 `GoProYTUploader.exe`，不用另外安裝 Python。
+   - 第一次執行時，Windows SmartScreen 可能會顯示「Windows 已保護您的電腦」，按「其他資訊 → 仍要執行」即可。原因是這個程式沒有付費的程式碼簽章。
+   - 整個資料夾要放在一起，不能只把 exe 單獨複製出來。
 2. 按「設定 → 匯入 client_secret.json」，選剛剛下載的檔案。
 3. 按右上角「登入」，在跳出的瀏覽器頁面登入 Google，並允許存取。
 
@@ -72,10 +74,16 @@
 
 ## 開發
 
+需要 Python 3.10 以上版本。
+
 ```bash
+run.bat                                        # 從原始碼執行（第一次會建立 .venv 並安裝套件）
 .venv\Scripts\python.exe -m pytest -q          # 測試（會自己產生假的 GoPro MP4）
 .venv\Scripts\python.exe -m gopro_uploader --debug   # 開啟視窗並啟用開發者工具
+build.bat                                      # 打包成 dist\GoProYTUploader\GoProYTUploader.exe
 ```
+
+`build.bat` 使用 PyInstaller，產生的是資料夾形式，約 116 MB，其中 ffmpeg 佔大部分。發布時把 `dist\GoProYTUploader` 整個資料夾壓縮成 zip 即可。圖示由 `packaging/make_icon.py` 產生。
 
 程式結構：
 
