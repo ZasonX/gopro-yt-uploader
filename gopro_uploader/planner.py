@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import statistics
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -153,6 +154,7 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             default_title += " " + item["tz_label"]
         item["title"] = ov.get("title") or default_title
         item["title_locked"] = "title" in ov
+        item["title_date_mismatch"] = item["title_locked"] and _date_mismatch(item["title"], local)
         item["edited"] = sorted(k for k in ov if k != "include")  # for "已修改" badges in the UI
         item["description"] = ov.get("description") or settings.description_template.format(
             files="\n".join(item["files"]), place=item["place"])
@@ -166,6 +168,15 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
 
     _dedupe_titles(items)
     return items
+
+
+_DATE_IN_TITLE = re.compile(r"(\d{4})\s*[-/年.]?\s*(\d{1,2})\s*[-/月.]?\s*(\d{1,2})")
+
+
+def _date_mismatch(title: str, local: datetime) -> bool:
+    """A hand-typed title holds a date, but not the recording's date (e.g. typo 04-25 vs 04-04)."""
+    found = [(int(y), int(m), int(d)) for y, m, d in _DATE_IN_TITLE.findall(title)]
+    return bool(found) and (local.year, local.month, local.day) not in found
 
 
 def _fill_nearby_locations(items):

@@ -104,10 +104,14 @@ def add_to_playlist(yt, playlist_id: str, video_id: str) -> None:
 
 
 def video_body(title, description, category_id, privacy, recording_date,
-               lat=None, lon=None, place=None) -> dict:
+               lat=None, lon=None, place=None, title_language=None, audio_language=None) -> dict:
+    snippet = {"title": title[:100], "description": description[:5000], "categoryId": category_id}
+    if title_language:
+        snippet["defaultLanguage"] = title_language
+    if audio_language:
+        snippet["defaultAudioLanguage"] = audio_language
     body = {
-        "snippet": {"title": title[:100], "description": description[:5000],
-                    "categoryId": category_id},
+        "snippet": snippet,
         "status": {"privacyStatus": privacy,
                    "selfDeclaredMadeForKids": False,     # 不是為兒童打造
                    "containsSyntheticMedia": False},     # 非 AI / 合成內容
@@ -119,6 +123,25 @@ def video_body(title, description, category_id, privacy, recording_date,
     if place:
         body["recordingDetails"]["locationDescription"] = place
     return body
+
+
+def set_location(yt, video_id: str, recording_date: str, lat, lon, place) -> bool:
+    """Write the location with videos.update and read it back.
+
+    videos.insert accepted recordingDetails.location/locationDescription but YouTube
+    did not keep them, while a location set in Studio
+    shows up in exactly those fields. So we set it again after the upload.
+    update replaces the whole part, hence recordingDate is sent too.
+    """
+    details = {"recordingDate": recording_date,
+               "location": {"latitude": lat, "longitude": lon}}
+    if place:
+        details["locationDescription"] = place
+    _execute(yt.videos().update(part="recordingDetails",
+                                body={"id": video_id, "recordingDetails": details}))
+    r = _execute(yt.videos().list(id=video_id, part="recordingDetails"))
+    got = (r.get("items") or [{}])[0].get("recordingDetails", {})
+    return "location" in got
 
 
 def upload(yt, path: str, body: dict, progress=None, cancel=None) -> str:

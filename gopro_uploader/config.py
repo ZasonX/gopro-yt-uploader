@@ -40,6 +40,9 @@ class Settings:
     title_format: str = "%Y-%m-%d %H:%M"
     description_template: str = "{files}"
     category_id: str = "19"            # Travel & Events
+    # Studio's 「中文（台灣）」 is zh-TW for both (read back from a video edited in Studio)
+    title_language: str = "zh-TW"      # 標題和說明的語言 = snippet.defaultLanguage
+    audio_language: str = "zh-TW"      # 影片語言 = snippet.defaultAudioLanguage
     privacy: str = "unlisted"          # unverified API projects get forced to private
     merge_chapters: bool = True
     delete_merged: bool = True

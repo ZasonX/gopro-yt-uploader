@@ -241,3 +241,71 @@ def test_title_edit_persists_across_restarts_but_ticks_do_not(tmp_path):
     api2.scan(str(tmp_path))
     api2.edit([item["id"]], {"title": None})
     assert Api("unused.log").scan(str(tmp_path))["items"][0]["title"] == "2026-03-15 14:32 JST"
+
+
+def test_title_date_mismatch_is_flagged(tmp_path):
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 4.0, [])
+    recs = scan(str(tmp_path))
+    key = recs[0].key
+    plan = lambda ov: build_plan(recs, config.Settings(), {key: ov})[0]  # noqa: E731
+    assert plan({"title": "2025-04-25 範例車站 東口"})["title_date_mismatch"]
+    assert not plan({"title": "2026-03-15 範例車站"})["title_date_mismatch"]
+    assert not plan({"title": "2026年3月15日 範例車站"})["title_date_mismatch"]
+    assert not plan({"title": "範例車站（沒有日期）"})["title_date_mismatch"]
+    assert not plan({})["title_date_mismatch"]  # automatic titles always match
+
+
+def test_video_body_sends_languages():
+    from gopro_uploader.youtube import video_body
+    b = video_body("t", "d", "19", "unlisted", "2025-04-04T00:00:00Z",
+                   title_language="zh-TW", audio_language="zh-TW")
+    assert b["snippet"]["defaultLanguage"] == "zh-TW"
+    assert b["snippet"]["defaultAudioLanguage"] == "zh-TW"
+    assert config.Settings().title_language == config.Settings().audio_language == "zh-TW"
+
+
+def test_set_location_updates_then_reads_back():
+    from gopro_uploader import youtube
+
+    class Req:
+        def __init__(self, result):
+            self.result = result
+
+        def execute(self, num_retries=0):
+            return self.result
+
+    class Videos:
+        def __init__(self):
+            self.sent = None
+
+        def update(self, part, body):
+            self.sent = (part, body)
+            return Req(body)
+
+        def list(self, id, part):
+            return Req({"items": [{"recordingDetails": self.sent[1]["recordingDetails"]}]})
+
+    class YT:
+        v = Videos()
+
+        def videos(self):
+            return self.v
+
+    yt = YT()
+    assert youtube.set_location(yt, "vid", "2025-04-04T00:00:00Z", 12.3456, 22.6543, "車站大廳")
+    part, body = yt.v.sent
+    assert part == "recordingDetails" and body["id"] == "vid"
+    assert body["recordingDetails"] == {"recordingDate": "2025-04-04T00:00:00Z",
+                                        "location": {"latitude": 12.3456, "longitude": 22.6543},
+                                        "locationDescription": "車站大廳"}
+
+
+def test_uploaded_recordings_cannot_be_edited(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    item = api.scan(str(tmp_path))["items"][0]
+    api._store.update(item, status="uploaded", video_ids=["VIDEO_ID_01"])
+    api._replan()
+    res = api.edit([item["id"]], {"title": "改了也沒用"})
+    assert res["items"][0]["title"] == "2026-03-15 14:32 JST" and res["items"][0]["edited"] == []

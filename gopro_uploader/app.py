@@ -38,6 +38,7 @@ class Api:
         self._cancel = False
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
+        self._uploading_id: str | None = None
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -56,6 +57,9 @@ class Api:
         self._items = build_plan(self._recs, self._settings, self._overrides,
                                  store_lookup=self._store.lookup,
                                  place_lookup=self._place_lookup)
+        for it in self._items:  # "uploading" lives only in memory, not in state.json
+            if it["id"] == self._uploading_id and it["status"] != "uploaded":
+                it["status"] = "uploading"
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items,
                 "camera_offset_hours": round(off.total_seconds() / 3600, 2) if off else None}
@@ -125,7 +129,19 @@ class Api:
             parts.append(f"{self._FIELD_NAMES.get(k, k)} → {'（還原）' if v is None else v}")
         self._say(f"修改 {name}：" + "，".join(parts))
 
+    def _locked(self, item_id: str) -> bool:
+        """Uploading or uploaded: its data is already on YouTube, edits here would do nothing."""
+        if item_id == self._uploading_id:
+            return True
+        it = next((i for i in self._items if i["id"] == item_id), None)
+        return bool(it and it["status"] in ("uploaded", "partial"))
+
     def edit(self, ids: list[str], fields: dict):
+        if any(k != "include" for k in fields):
+            skipped = [i for i in ids if self._locked(i)]
+            if skipped:
+                self._say(f"略過 {len(skipped)} 段上傳中或已上傳的錄影；已上傳的請到 YouTube Studio 修改")
+            ids = [i for i in ids if i not in skipped]
         for i in ids:
             if any(k != "include" for k in fields):  # ticks are too chatty to log
                 self._log_edit(i, fields)
@@ -239,9 +255,13 @@ class Api:
             return
 
         ok = 0
-        for n, item in enumerate(todo, 1):
+        for n, queued in enumerate(todo, 1):
             if self._cancel:
                 break
+            # edits made while earlier videos were uploading re-plan self._items;
+            # take this recording's latest version, not the snapshot from the start
+            item = next((i for i in self._items if i["id"] == queued["id"]), queued)
+            self._uploading_id = item["id"]
             self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
             try:
                 self._upload_item(yt, item, playlist_id)
@@ -257,6 +277,7 @@ class Api:
                 log.exception("upload failed")
                 self._set_status(item, "error", error=str(e))
                 self._say(f"失敗：{e}", "error")
+        self._uploading_id = None
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段" + ("（已取消）" if self._cancel else ""))
 
     def _set_status(self, item, status, **extra):
@@ -287,7 +308,7 @@ class Api:
             self._emit("item", id=item["id"], status="uploading")
             body = youtube.video_body(title, item["description"], s.category_id, s.privacy,
                                       item["recording_date"], item["lat"], item["lon"],
-                                      item["place"] or None)
+                                      item["place"] or None, s.title_language, s.audio_language)
 
             def progress(done, total, _idx=idx):
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
@@ -295,6 +316,14 @@ class Api:
 
             vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel)
             item["video_ids"].append(vid)
+            if item["lat"] is not None:
+                try:
+                    if not youtube.set_location(yt, vid, item["recording_date"], item["lat"],
+                                                item["lon"], item["place"] or None):
+                        self._say("⚠ YouTube 沒有保存拍攝地點，請到 Studio 手動設定", "error")
+                except Exception as e:  # noqa: BLE001 - the video itself is uploaded fine
+                    log.exception("set_location failed")
+                    self._say(f"⚠ 設定拍攝地點失敗（影片已上傳）：{e}", "error")
             if playlist_id:
                 youtube.add_to_playlist(yt, playlist_id, vid)
             self._store.append_history(item, vid, title, s.playlist)
