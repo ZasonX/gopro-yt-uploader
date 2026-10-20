@@ -110,8 +110,25 @@ class Api:
         self._say(f"找到 {nfiles} 個檔案，共 {len(self._items)} 段錄影")
         return res
 
+    _FIELD_NAMES = {"title": "標題", "local_time": "拍攝時間", "tz": "時區", "place": "地點名稱",
+                    "lat": "座標", "include": "上傳勾選"}
+
+    def _log_edit(self, item_id: str, fields: dict):
+        it = next((i for i in self._items if i["id"] == item_id), None)
+        name = " + ".join(it["files"]) if it else item_id
+        parts = []
+        for k, v in fields.items():
+            if k == "lon":
+                continue  # shown together with lat
+            if k == "lat" and v is not None:
+                v = f"{v:.5f}, {fields.get('lon', 0):.5f}"
+            parts.append(f"{self._FIELD_NAMES.get(k, k)} → {'（還原）' if v is None else v}")
+        self._say(f"修改 {name}：" + "，".join(parts))
+
     def edit(self, ids: list[str], fields: dict):
         for i in ids:
+            if any(k != "include" for k in fields):  # ticks are too chatty to log
+                self._log_edit(i, fields)
             ov = self._overrides.setdefault(i, {})
             for k, v in fields.items():
                 if v is None:
@@ -120,6 +137,15 @@ class Api:
                     ov[k] = v
             if i in self._fps:  # not "include": a remembered tick could re-upload a finished video
                 self._edits.put(self._fps[i], {k: v for k, v in ov.items() if k != "include"})
+        return self._replan()
+
+    def reset_edits(self, ids: list[str]):
+        """Forget every edit of these recordings (the upload tick stays as it is)."""
+        for i in ids:
+            ov = self._overrides.get(i, {})
+            keys = {k: None for k in ov if k != "include"}
+            if keys:
+                self.edit([i], keys)
         return self._replan()
 
     def geocode_all(self):

@@ -206,6 +206,25 @@ def test_each_recording_uses_the_zone_the_camera_was_in(tmp_path):
     assert tw3["title"] == "2025-04-04 09:00" and tw3["utc"].startswith("2025-04-04T01:00")
 
 
+def test_edits_are_logged_marked_and_resettable(tmp_path, caplog):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010798.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    item = api.scan(str(tmp_path))["items"][0]
+    assert item["edited"] == []
+    with caplog.at_level("INFO"):
+        res = api.edit([item["id"]], {"place": "範例車站", "local_time": "2025-04-04T09:00"})
+    assert "修改 GX010798.MP4：地點名稱 → 範例車站，拍攝時間 → 2025-04-04T09:00" in caplog.text
+    assert res["items"][0]["edited"] == ["local_time", "place"]
+
+    api.edit([item["id"]], {"include": False})
+    res = api.reset_edits([item["id"]])
+    it = res["items"][0]
+    assert it["edited"] == [] and it["place"] == "" and it["time_source"] != "manual"
+    assert it["include"] is False  # the tick is not an "edit" to undo
+    assert Api("unused.log").scan(str(tmp_path))["items"][0]["edited"] == []  # and it's saved
+
+
 def test_title_edit_persists_across_restarts_but_ticks_do_not(tmp_path):
     from gopro_uploader.app import Api
     make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])

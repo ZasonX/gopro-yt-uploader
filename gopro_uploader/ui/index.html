@@ -71,6 +71,11 @@ aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: a
 #preview .bar2 button.on { outline: 2px solid var(--accent2); }
 .detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); max-height: 52vh; overflow: auto; }
 .detail h3 { margin: 0; font-size: 13px; }
+.grp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.grp .gh { display: flex; align-items: center; gap: 6px; }
+.grp .gh b { font-size: 13px; }
+.badge { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
+button.mini { padding: 1px 8px; font-size: 12px; margin-left: auto; }
 .detail .row2 { display: flex; gap: 6px; }
 .detail .row2 > * { flex: 1; }
 .results { display: flex; flex-direction: column; gap: 2px; }
@@ -397,49 +402,67 @@ function renderDetail() {
   renderPreview();
   const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
   if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>'; setPick(false); return; }
-  const one = sel.length === 1 ? sel[0] : null;
+  const one = sel.length === 1 ? sel[0] : null, ids = [...selected];
+  // which groups of fields the user has changed (on any of the selected recordings)
+  const GROUPS = { title: ["title"], time: ["local_time", "tz"], place: ["place", "lat", "lon"] };
+  const edited = g => sel.some(i => i.edited.some(k => GROUPS[g].includes(k)));
+  const head = (g, label) => `<div class="gh"><b>${label}</b>
+    ${edited(g) ? `<span class="badge">已修改</span><button class="mini" data-reset="${g}" title="還原成自動判斷的值">還原</button>` : ""}</div>`;
   d.innerHTML = `
-    <h3>${one ? esc(one.title) : `已選 ${sel.length} 段錄影`}</h3>
-    ${one ? `<div class="hint">${esc(one.files.join(" + "))}</div>` : ""}
+    <h3>${one ? esc(one.files.join(" + ")) : `已選 ${sel.length} 段錄影（下面的修改會套用到全部）`}</h3>
     ${one?.time_suspect ? '<div class="hint warn">⚠ 好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。看完預覽後請填入正確的拍攝時間。</div>' : ""}
-    ${one ? `<label class="f">拍攝時間（${TSRC[one.time_source] || one.time_source}）
-      <div style="display:flex;gap:6px">
-        <input id="timeInput" type="datetime-local" value="${esc(one.local.slice(0, 16).replace(" ", "T"))}" style="flex:1">
-        <button id="btnTimeSave">套用</button>
-        ${one.time_source === "manual" ? '<button id="btnTimeReset" title="恢復成檔案裡的時間">恢復</button>' : ""}
-      </div>
-    </label>` : ""}
-    <label class="f">拍攝時的時區${one ? `（${ZSRC[one.tz_source]}）` : ""}
-      <select id="tzInput">
-        <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從檔案判斷）"}</option>
-        ${TZS.map(t => `<option value="${t}" ${one && one.tz_source === "manual" && one.tz === t ? "selected" : ""}>${t}${t === S.home_tz ? "（家鄉，不標示）" : ""}</option>`).join("")}
-      </select>
-    </label>
-    <label class="f">地點名稱（會寫入 YouTube 的拍攝地點說明）
-      <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "" : "輸入後套用到全部已選的錄影"}">
-    </label>
-    <div class="row2"><button id="btnPlaceSave">套用名稱</button><button id="btnPickMap">${pickMode ? "取消地圖點選" : "在地圖上點選位置"}</button></div>
-    <label class="f">搜尋地點
-      <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱" style="flex:1"><button id="btnSearch">搜尋</button></div>
-    </label>
-    <div class="results" id="results"></div>
-    <div class="row2"><button id="btnResetLoc">恢復 GPS / 自動地點</button></div>`;
-  $("#btnPlaceSave").onclick = async () => {
-    const v = $("#placeInput").value.trim();
-    setPlan(await call("edit", [...selected], { place: v || null }));
-  };
-  $("#tzInput").onchange = async e => setPlan(await call("edit", [...selected], { tz: e.target.value || null }));
-  if (one) {
-    // a fixed time is trustworthy again, so tick it for upload
-    $("#btnTimeSave").onclick = async () => {
-      const v = $("#timeInput").value; if (!v) return;
-      setPlan(await call("edit", [one.id], { local_time: v, include: true }));
+    <div class="hint">改完按 Enter 或點別的地方就會自動儲存。</div>
+    ${one ? `<section class="grp">${head("title", "標題")}
+      <input id="titleInput" value="${esc(one.title)}">
+    </section>` : ""}
+    <section class="grp">${head("time", "拍攝時間")}
+      ${one ? `<label class="f">日期時間<span class="hint">（${TSRC[one.time_source] || one.time_source}）</span>
+        <input id="timeInput" type="datetime-local" value="${esc(one.local.slice(0, 16).replace(" ", "T"))}">
+      </label>` : ""}
+      <label class="f">時區${one ? `<span class="hint">（${ZSRC[one.tz_source]}）</span>` : ""}
+        <select id="tzInput">
+          <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從檔案判斷）"}</option>
+          ${TZS.map(t => `<option value="${t}" ${one && one.tz_source === "manual" && one.tz === t ? "selected" : ""}>${t}${t === S.home_tz ? "（家鄉，標題不標示）" : ""}</option>`).join("")}
+        </select>
+      </label>
+    </section>
+    <section class="grp">${head("place", "拍攝地點（上傳到 YouTube 的地點資訊）")}
+      <label class="f">地點名稱
+        <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "例如：範例車站" : "輸入後套用到全部已選的錄影"}">
+      </label>
+      <label class="f">座標<span class="hint">（${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}，${LSRC[one.loc_source] || ""}` : "沒有"}）</span>
+        <div class="row2"><button id="btnPickMap">${pickMode ? "取消地圖點選" : "在地圖上點選"}</button></div>
+      </label>
+      <label class="f">或搜尋地點（會同時設定名稱和座標）
+        <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱" style="flex:1"><button id="btnSearch">搜尋</button></div>
+      </label>
+      <div class="results" id="results"></div>
+    </section>
+    ${sel.some(i => i.edited.length) ? `<button id="btnResetAll">還原${one ? "這段" : "已選錄影"}的所有修改</button>` : ""}`;
+
+  const save = async fields => setPlan(await call("edit", ids, fields));
+  const onCommit = (el, fn) => {  // Enter or leaving the field saves; Esc puts the old value back
+    if (!el) return;
+    const orig = el.value;
+    el.onkeydown = e => {
+      if (e.key === "Enter" && !e.isComposing) el.blur();
+      if (e.key === "Escape") { el.value = orig; el.blur(); }
     };
-    const reset = $("#btnTimeReset");
-    if (reset) reset.onclick = async () => setPlan(await call("edit", [one.id], { local_time: null }));
-  }
+    el.onblur = () => { if (el.value !== orig) fn(el.value.trim()); };
+  };
+  onCommit($("#titleInput"), v => save({ title: v || null }));
+  // a fixed time is trustworthy again, so tick it for upload
+  onCommit($("#timeInput"), v => v && save({ local_time: v, include: true }));
+  onCommit($("#placeInput"), v => save({ place: v || null }));
+  $("#tzInput").onchange = e => save({ tz: e.target.value || null });
+  d.querySelectorAll("[data-reset]").forEach(b => b.onclick = () =>
+    save(Object.fromEntries(GROUPS[b.dataset.reset].map(k => [k, null]))));
+  const all = $("#btnResetAll");
+  if (all) all.onclick = async () => {
+    if (confirm(`要還原${one ? "這段錄影" : ` ${sel.length} 段錄影`}的標題、時間、時區、地點，全部回到自動判斷的值嗎？`))
+      setPlan(await call("reset_edits", ids));
+  };
   $("#btnPickMap").onclick = () => { setPick(!pickMode); renderDetail(); };
-  $("#btnResetLoc").onclick = async () => setPlan(await call("edit", [...selected], { lat: null, lon: null, place: null }));
   const doSearch = async () => {
     const q = $("#searchQ").value.trim(); if (!q) return;
     $("#results").innerHTML = '<span class="hint">搜尋中…</span>';

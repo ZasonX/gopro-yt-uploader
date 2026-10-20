@@ -153,6 +153,7 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             default_title += " " + item["tz_label"]
         item["title"] = ov.get("title") or default_title
         item["title_locked"] = "title" in ov
+        item["edited"] = sorted(k for k in ov if k != "include")  # for "已修改" badges in the UI
         item["description"] = ov.get("description") or settings.description_template.format(
             files="\n".join(item["files"]), place=item["place"])
         # YouTube keeps only the date; send local midnight as UTC so the day never shifts
