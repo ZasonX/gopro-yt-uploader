@@ -76,9 +76,13 @@ aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: a
 .grp .gh b { font-size: 13px; }
 .badge { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
 button.mini { padding: 1px 8px; font-size: 12px; margin-left: auto; }
-a.mini { font-size: 12px; color: var(--accent2); }
-a.mini:first-of-type { margin-left: auto; }
-.grp.yt { border-color: var(--accent2); }
+.grp.yt { border-color: var(--accent2); gap: 8px; }
+.grp.yt > div:not(.gh):not(.ytlinks) { display: grid; grid-template-columns: 9em 1fr; }
+.ytlinks { display: flex; gap: 8px; margin-top: 4px; }
+a.btnlink { flex: 1; text-align: center; padding: 8px 10px; border-radius: 6px; text-decoration: none;
+            border: 1px solid var(--accent2); color: var(--accent2); font-weight: 600; }
+a.btnlink:first-child { background: var(--accent2); color: #fff; }
+a.btnlink:hover { filter: brightness(1.1); }
 .grp.yt .warn, .st.missing { color: var(--accent); }
 .detail .row2 { display: flex; gap: 6px; }
 .detail .row2 > * { flex: 1; }
@@ -444,6 +448,17 @@ function renderDetail() {
   if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>'; setPick(false); return; }
   const one = sel.length === 1 ? sel[0] : null, ids = [...selected];
   const locked = sel.some(i => ["uploading", "merging", "uploaded", "partial"].includes(i.status));
+  if (one && locked) {  // already on YouTube: show YouTube's data instead of fields that can't change
+    const busyNow = ["uploading", "merging"].includes(one.status);
+    d.innerHTML = `<h3>${esc(one.files.join(" + "))}</h3>
+      ${busyNow ? '<div class="hint">正在上傳，完成後這裡會顯示 YouTube 上的資料。</div>'
+        : one.yt ? ytBox(one)
+        : `<div class="hint">已上傳。登入 YouTube 後重新掃描，這裡會顯示 YouTube 上目前的資料。</div>
+           ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
+             <a class="btnlink" href="https://studio.youtube.com/video/${esc(v)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a></div>`).join("")}`}`;
+    setPick(false);
+    return;
+  }
   // which groups of fields the user has changed (on any of the selected recordings)
   const GROUPS = { title: ["title"], time: ["local_time", "tz"], place: ["place", "lat", "lon"] };
   const edited = g => sel.some(i => i.edited.some(k => GROUPS[g].includes(k)));
@@ -452,6 +467,7 @@ function renderDetail() {
   d.innerHTML = `
     <h3>${one ? esc(one.files.join(" + ")) : `已選 ${sel.length} 段錄影（下面的修改會套用到全部）`}</h3>
     ${locked ? `<div class="hint warn">${one ? "這段錄影" : "已選的錄影中有些"}${one?.status === "uploading" || one?.status === "merging" ? "正在上傳" : "已經上傳到 YouTube"}，這裡的修改不會影響 YouTube 上的影片，所以先鎖住了。要改請到 YouTube Studio。</div>` : ""}
+    ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
     ${one?.time_suspect ? '<div class="hint warn">⚠ 好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。看完預覽後請填入正確的拍攝時間。</div>' : ""}
     ${locked ? "" : '<div class="hint">改完按 Enter 或點別的地方就會自動儲存。</div>'}
     ${one ? `<section class="grp">${head("title", "標題")}
@@ -483,9 +499,8 @@ function renderDetail() {
     </section>
     ${sel.some(i => i.edited.length) ? `<button id="btnResetAll">還原${one ? "這段" : "已選錄影"}的所有修改</button>` : ""}`;
 
-  if (locked) {
+  if (locked) {  // several selected, some already on YouTube
     d.querySelectorAll("section input, section select, section button, #btnResetAll").forEach(el => el.disabled = true);
-    if (one?.yt) d.insertAdjacentHTML("afterbegin", ytBox(one));  // what YouTube has now, on top
     return;
   }
   const save = async fields => setPlan(await call("edit", ids, fields));
@@ -525,17 +540,19 @@ function renderDetail() {
   $("#searchQ").onkeydown = e => { if (e.key === "Enter") doSearch(); };
 }
 function ytBox(it) {
-  const row = (k, v) => `<div><span class="hint">${k}</span>　${v}</div>`;
-  return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上目前的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b>
-      <a class="mini" href="https://youtu.be/${esc(y.id)}" target="_blank">打開影片</a>
-      <a class="mini" href="https://studio.youtube.com/video/${esc(y.id)}/edit" target="_blank">在 Studio 修改</a></div>
+  const row = (k, v) => `<div><span class="hint">${k}</span><span>${v}</span></div>`;
+  return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上目前的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b></div>
     ${y.missing ? '<div class="hint warn">YouTube 上找不到這支影片（可能已刪除）。可以重新勾選上傳。</div>' : `
       ${row("標題", esc(y.title))}
       ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
       ${row("拍攝日期", esc(y.recording_date || "—"))}
       ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>` : '<span class="warn">沒有</span>')}
       ${row("標題和說明的語言", LANG[y.title_language] || esc(y.title_language || "—"))}
-      ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}`}
+      ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}
+      <div class="ytlinks">
+        <a class="btnlink" href="https://youtu.be/${esc(y.id)}" target="_blank">▶ 打開影片</a>
+        <a class="btnlink" href="https://studio.youtube.com/video/${esc(y.id)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a>
+      </div>`}
   </section>`).join("");
 }
 function setPick(on) { pickMode = on; document.body.classList.toggle("pickmode", on); }
