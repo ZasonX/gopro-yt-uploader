@@ -27,8 +27,35 @@ def detect_camera_offset(recs: list[Recording]) -> timedelta | None:
     return timedelta(seconds=statistics.median(diffs))
 
 
+def file_offset(rec: Recording) -> timedelta | None:
+    """The camera's UTC offset while recording, from the first clip's file times.
+
+    Newer GoPros write mvhd in UTC but stamp the file with the camera's local clock,
+    so (file time - duration) - mvhd is the zone the camera was set to (+8 in Taiwan,
+    +9 in Japan). None when that doesn't look like a real offset,
+    e.g. a camera that writes mvhd in local time (difference ~0).
+    """
+    c = rec.clips[0]
+    if not (c.info and c.info.camera_time):
+        return None
+    start = datetime.fromtimestamp(c.mtime) - timedelta(seconds=c.info.duration)
+    diff = (start - c.info.camera_time).total_seconds()
+    q = round(diff / 900) * 900  # real zones are whole quarter hours
+    if q == 0 or abs(diff - q) > 120 or abs(q) > 14 * 3600:
+        return None
+    return timedelta(seconds=q)
+
+
+def _zone_for(offset: timedelta, at: datetime, candidates) -> ZoneInfo | timezone:
+    """A named zone with that offset at that moment (so titles say JST), else a fixed offset."""
+    for tz in candidates:
+        if at.astimezone(tz).utcoffset() == offset:
+            return tz
+    return timezone(offset)
+
+
 def _rec_utc(rec: Recording, cam_offset: timedelta | None, camera_tz: ZoneInfo | None,
-             trip_tz: ZoneInfo):
+             trip_tz: ZoneInfo, file_off: timedelta | None = None):
     """Return (utc datetime, source)."""
     elapsed = 0.0
     for c in rec.clips:
@@ -42,6 +69,8 @@ def _rec_utc(rec: Recording, cam_offset: timedelta | None, camera_tz: ZoneInfo |
     if cam:
         if camera_tz:
             return cam.replace(tzinfo=camera_tz).astimezone(timezone.utc), "camera"
+        if file_off is not None:  # file times prove mvhd is UTC
+            return cam.replace(tzinfo=timezone.utc), "camera"
         if cam_offset is not None:
             return (cam - cam_offset).replace(tzinfo=timezone.utc), "camera+gps_offset"
         return cam.replace(tzinfo=trip_tz).astimezone(timezone.utc), "camera"
@@ -54,12 +83,30 @@ def _rec_utc(rec: Recording, cam_offset: timedelta | None, camera_tz: ZoneInfo |
 def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
                store_lookup=None, place_lookup=None) -> list[dict]:
     trip_tz = ZoneInfo(settings.trip_tz)
+    home_tz = ZoneInfo(settings.home_tz)
     camera_tz = None if settings.camera_tz == "auto" else ZoneInfo(settings.camera_tz)
     cam_offset = detect_camera_offset(recs) if camera_tz is None else None
 
+    # A camera whose clock was reset stamps the same start time on every clip it records.
+    cam_times = [r.clips[0].info.camera_time if r.clips[0].info else None for r in recs]
+    shared = {t for t in cam_times if t is not None and cam_times.count(t) > 1}
+
     items = []
-    for rec in recs:
-        utc, tsrc = _rec_utc(rec, cam_offset, camera_tz, trip_tz)
+    for rec, cam_time in zip(recs, cam_times):
+        off = file_offset(rec) if camera_tz is None else None
+        utc, tsrc = _rec_utc(rec, cam_offset, camera_tz, trip_tz, off)
+        ov = overrides.get(rec.key, {})
+        # the zone this recording was shot in: user's pick > camera's own clock > trip default
+        if ov.get("tz"):
+            zone, zsrc = ZoneInfo(ov["tz"]), "manual"
+        elif off is not None:
+            zone, zsrc = _zone_for(off, utc, (home_tz, trip_tz)), "file"
+        else:
+            zone, zsrc = trip_tz, "default"
+        if ov.get("local_time"):  # "YYYY-MM-DDTHH:MM" in the recording's zone, set by the user
+            utc = datetime.fromisoformat(ov["local_time"]).replace(tzinfo=zone).astimezone(timezone.utc)
+            tsrc = "manual"
+        local = utc.astimezone(zone)
         track = [[p.lat, p.lon] for c in rec.clips if c.info for p in c.info.gps]
         names = [c.name for c in rec.clips]
         item = {
@@ -70,14 +117,21 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             "size": sum(c.size for c in rec.clips),
             "duration": round(sum(c.info.duration for c in rec.clips if c.info), 1),
             "utc": utc.isoformat(),
-            "local": utc.astimezone(trip_tz).strftime("%Y-%m-%d %H:%M:%S"),
+            "local": local.strftime("%Y-%m-%d %H:%M:%S"),
+            "tz": getattr(zone, "key", None) or local.strftime("%Z"),
+            "tz_source": zsrc,
+            # no label in the home zone (e.g. Taiwan); otherwise "JST" etc.
+            "tz_label": "" if local.utcoffset() == local.astimezone(home_tz).utcoffset()
+                        else local.strftime("%Z"),
             "time_source": tsrc,
+            "time_suspect": tsrc not in ("gps", "manual") and cam_time in shared,
             "lat": track[0][0] if track else None,
             "lon": track[0][1] if track else None,
             "loc_source": "gps" if track else None,
             "track": track,
             "place": "",
-            "include": True,
+            # don't upload a wrong date by accident: suspect times start unticked
+            "include": not (tsrc not in ("gps", "manual") and cam_time in shared),
             "scan_errors": [f"{c.name}: {c.error}" for c in rec.clips if c.error],
         }
         items.append(item)
@@ -93,8 +147,11 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             item["loc_source"] = "manual"
         if "place" not in ov and item["lat"] is not None and place_lookup:
             item["place"] = place_lookup(item["lat"], item["lon"]) or ""
-        local = datetime.fromisoformat(item["utc"]).astimezone(trip_tz)
-        item["title"] = ov.get("title") or local.strftime(settings.title_format)
+        local = datetime.fromisoformat(item["local"])
+        default_title = local.strftime(settings.title_format)
+        if item["tz_label"]:
+            default_title += " " + item["tz_label"]
+        item["title"] = ov.get("title") or default_title
         item["title_locked"] = "title" in ov
         item["description"] = ov.get("description") or settings.description_template.format(
             files="\n".join(item["files"]), place=item["place"])

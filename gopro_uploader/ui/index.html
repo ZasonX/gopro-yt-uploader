@@ -51,6 +51,8 @@ td.place { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
 .tag.gps { color: var(--ok); border-color: var(--ok); }
 .tag.nearby, .tag.manual { color: var(--warn); border-color: var(--warn); }
+.tag.suspect { color: var(--accent); border-color: var(--accent); }
+.hint.warn { color: var(--accent); }
 .st { font-size: 12px; }
 .st.uploaded { color: var(--ok); }
 .st.error { color: var(--accent); }
@@ -111,7 +113,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <input id="playlist" list="playlists" style="width:150px">
     <datalist id="playlists"></datalist>
   </label>
-  <label class="f">旅程時區（標題用）
+  <label class="f" title="每段錄影會從檔案自動判斷拍攝時的時區；判斷不出來時才用這個">預設時區
     <select id="trip_tz"></select>
   </label>
   <label class="f">標題格式
@@ -161,6 +163,9 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   <div class="grid">
     <label class="f">相機時鐘時區
       <select id="camera_tz"></select>
+    </label>
+    <label class="f" title="在這個時區拍的影片，標題不加時區；其他時區會加上 JST 之類的縮寫">家鄉時區（標題不標示）
+      <select id="home_tz"></select>
     </label>
     <label class="f">上傳時的瀏覽權限
       <select id="privacy">
@@ -213,8 +218,9 @@ const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed
 const fmtDur = s => { s = Math.round(s); const m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(s%60).padStart(2,"0")}` : `${m}:${String(s%60).padStart(2,"0")}`; };
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const STATUS = { pending: "待上傳", uploading: "上傳中", merging: "合併中", uploaded: "已上傳", error: "失敗", partial: "部分完成" };
-const TSRC = { gps: "GPS", "camera+gps_offset": "相機+GPS校正", camera: "相機時鐘", file_mtime: "檔案時間" };
+const TSRC = { gps: "GPS", "camera+gps_offset": "相機+GPS校正", camera: "相機時鐘", file_mtime: "檔案時間", manual: "手動" };
 const LSRC = { gps: "GPS", nearby: "推測", manual: "手動" };
+const ZSRC = { file: "從檔案自動判斷", manual: "手動指定", default: "判斷不出來，用預設時區" };
 
 function log(msg, level) {
   const el = $("#log"), line = document.createElement("div");
@@ -280,7 +286,8 @@ function render() {
       <td class="files" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? ` <span class="tag">${it.files.length} 段</span>` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</td>
       <td>${fmtDur(it.duration)}</td>
       <td>${fmtSize(it.size)}</td>
-      <td><span class="tag ${it.time_source === "gps" ? "gps" : ""}">${TSRC[it.time_source] || it.time_source}</span></td>
+      <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了；預設不上傳，請在右側填入正確時間">⚠ 時間可疑</span>'
+        : `<span class="tag ${it.time_source === "gps" ? "gps" : it.time_source === "manual" ? "manual" : ""}">${TSRC[it.time_source] || it.time_source}</span>`}</td>
       <td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>
     </tr>`).join("");
   summary(); refreshButtons();
@@ -393,7 +400,21 @@ function renderDetail() {
   const one = sel.length === 1 ? sel[0] : null;
   d.innerHTML = `
     <h3>${one ? esc(one.title) : `已選 ${sel.length} 段錄影`}</h3>
-    ${one ? `<div class="hint">${esc(one.local)}（${TSRC[one.time_source]}）· ${esc(one.files.join(" + "))}</div>` : ""}
+    ${one ? `<div class="hint">${esc(one.files.join(" + "))}</div>` : ""}
+    ${one?.time_suspect ? '<div class="hint warn">⚠ 好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。看完預覽後請填入正確的拍攝時間。</div>' : ""}
+    ${one ? `<label class="f">拍攝時間（${TSRC[one.time_source] || one.time_source}）
+      <div style="display:flex;gap:6px">
+        <input id="timeInput" type="datetime-local" value="${esc(one.local.slice(0, 16).replace(" ", "T"))}" style="flex:1">
+        <button id="btnTimeSave">套用</button>
+        ${one.time_source === "manual" ? '<button id="btnTimeReset" title="恢復成檔案裡的時間">恢復</button>' : ""}
+      </div>
+    </label>` : ""}
+    <label class="f">拍攝時的時區${one ? `（${ZSRC[one.tz_source]}）` : ""}
+      <select id="tzInput">
+        <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從檔案判斷）"}</option>
+        ${TZS.map(t => `<option value="${t}" ${one && one.tz_source === "manual" && one.tz === t ? "selected" : ""}>${t}${t === S.home_tz ? "（家鄉，不標示）" : ""}</option>`).join("")}
+      </select>
+    </label>
     <label class="f">地點名稱（會寫入 YouTube 的拍攝地點說明）
       <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "" : "輸入後套用到全部已選的錄影"}">
     </label>
@@ -407,6 +428,16 @@ function renderDetail() {
     const v = $("#placeInput").value.trim();
     setPlan(await call("edit", [...selected], { place: v || null }));
   };
+  $("#tzInput").onchange = async e => setPlan(await call("edit", [...selected], { tz: e.target.value || null }));
+  if (one) {
+    // a fixed time is trustworthy again, so tick it for upload
+    $("#btnTimeSave").onclick = async () => {
+      const v = $("#timeInput").value; if (!v) return;
+      setPlan(await call("edit", [one.id], { local_time: v, include: true }));
+    };
+    const reset = $("#btnTimeReset");
+    if (reset) reset.onclick = async () => setPlan(await call("edit", [one.id], { local_time: null }));
+  }
   $("#btnPickMap").onclick = () => { setPick(!pickMode); renderDetail(); };
   $("#btnResetLoc").onclick = async () => setPlan(await call("edit", [...selected], { lat: null, lon: null, place: null }));
   const doSearch = async () => {
@@ -480,7 +511,7 @@ function setChannel(name) {
 
 // ------------------------------------------------------------------- settings
 function openSettings() {
-  $("#camera_tz").value = S.camera_tz; $("#privacy").value = S.privacy;
+  $("#camera_tz").value = S.camera_tz; $("#home_tz").value = S.home_tz; $("#privacy").value = S.privacy;
   $("#description_template").value = S.description_template; $("#geocode_lang").value = S.geocode_lang;
   $("#merge_chapters").checked = S.merge_chapters; $("#delete_merged").checked = S.delete_merged;
   $("#ffmpegState").textContent = INIT.ffmpeg ? "" : "（找不到 ffmpeg，會改成分開上傳）";
@@ -490,7 +521,7 @@ function openSettings() {
 $("#btnSettings").onclick = openSettings;
 $("#btnCloseSettings").onclick = () => $("#dlgSettings").close();
 $("#btnSaveSettings").onclick = async () => {
-  await saveSettings({ camera_tz: $("#camera_tz").value, privacy: $("#privacy").value,
+  await saveSettings({ camera_tz: $("#camera_tz").value, home_tz: $("#home_tz").value, privacy: $("#privacy").value,
     description_template: $("#description_template").value || "{files}", geocode_lang: $("#geocode_lang").value,
     merge_chapters: $("#merge_chapters").checked, delete_merged: $("#delete_merged").checked });
   $("#dlgSettings").close();
@@ -504,6 +535,7 @@ let INIT;
 window.addEventListener("pywebviewready", async () => {
   api = window.pywebview.api;
   fillSelect($("#trip_tz"), TZS);
+  fillSelect($("#home_tz"), TZS);
   fillSelect($("#camera_tz"), ["auto", ...TZS], ["自動（用 GPS 時間校正）", ...TZS.map(t => `相機設定為 ${t}`)]);
   INIT = await call("init");
   S = INIT.settings;

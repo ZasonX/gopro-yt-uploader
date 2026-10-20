@@ -19,6 +19,7 @@ def path(*parts: str) -> str:
     return p
 
 
+# The zone label (" JST") is appended by the planner when a recording's zone differs from home_tz.
 TITLE_FORMATS = {
     "%Y-%m-%d %H:%M": "2026-03-15 14:32",
     "%Y年%m月%d日 %H:%M": "2026年03月15日 14:32",
@@ -30,7 +31,10 @@ TITLE_FORMATS = {
 @dataclass
 class Settings:
     playlist: str = "2025 日本"
+    # fallback zone when a recording's own zone can't be read from its file times
     trip_tz: str = "Asia/Tokyo"
+    # titles in this zone get no zone label; others get one (e.g. "JST")
+    home_tz: str = "Asia/Taipei"
     # "auto" = derive the camera clock offset from GPS time; otherwise an IANA zone
     camera_tz: str = "auto"
     title_format: str = "%Y-%m-%d %H:%M"
@@ -49,9 +53,12 @@ class Settings:
             with open(path("settings.json"), encoding="utf-8") as f:
                 data = json.load(f)
             known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-            return cls(**known)
+            s = cls(**known)
         except (OSError, ValueError, TypeError):
             return cls()
+        if s.title_format not in TITLE_FORMATS:  # e.g. the short-lived "… %Z" format
+            s.title_format = cls.title_format
+        return s
 
     def save(self) -> None:
         with open(path("settings.json"), "w", encoding="utf-8") as f:

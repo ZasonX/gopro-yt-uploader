@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -67,13 +67,13 @@ def test_plan_end_to_end(tmp_path):
     items = build_plan(recs, s, {})
     a, b = items
     assert a["files"] == ["GX010001.MP4", "GX020001.MP4"]
-    assert a["title"] == "2026-03-15 14:32"
+    assert a["title"] == "2026-03-15 14:32 JST"
     assert a["time_source"] == "gps"
     assert a["description"] == "GX010001.MP4\nGX020001.MP4"
     assert a["recording_date"] == "2026-03-15T00:00:00Z"
     assert a["loc_source"] == "gps"
     # no GPS: time from camera clock corrected by the GPS-derived offset, place inferred
-    assert b["title"] == "2026-03-15 14:52"
+    assert b["title"] == "2026-03-15 14:52 JST"
     assert b["time_source"] == "camera+gps_offset"
     assert b["loc_source"] == "nearby"
     assert b["lat"] == pytest.approx(SAMPLE_PLACE[0], abs=1e-6)
@@ -85,7 +85,7 @@ def test_camera_clock_in_taiwan_time_is_corrected(tmp_path):
     make_mp4(tmp_path / "GX010001.MP4", tw_cam, 4.0, [gps5_payload(*SAMPLE_PLACE, "260315053210.000")] * 4)
     make_mp4(tmp_path / "GX010002.MP4", tw_cam.replace(minute=50), 4.0, [])
     items = build_plan(scan(str(tmp_path)), config.Settings(), {})
-    assert [i["title"] for i in items] == ["2026-03-15 14:32", "2026-03-15 14:50"]
+    assert [i["title"] for i in items] == ["2026-03-15 14:32 JST", "2026-03-15 14:50 JST"]
 
 
 @pytest.fixture
@@ -150,9 +150,75 @@ def test_overrides_and_duplicate_titles(tmp_path):
     make_mp4(tmp_path / "GX010002.MP4", CAM.replace(second=40), 4.0, [])
     recs = scan(str(tmp_path))
     items = build_plan(recs, config.Settings(), {})
-    assert [i["title"] for i in items] == ["2026-03-15 14:32", "2026-03-15 14:32 (2)"]
+    assert [i["title"] for i in items] == ["2026-03-15 14:32 JST", "2026-03-15 14:32 JST (2)"]
     key = items[0]["id"]
     items = build_plan(recs, config.Settings(), {key: {"title": "範例寺", "lat": 1.0, "lon": 2.0,
                                                        "place": "X"}})
     assert items[0]["title"] == "範例寺" and items[0]["loc_source"] == "manual"
     assert items[0]["place"] == "X"
+
+
+def test_reset_clock_is_suspect_until_time_is_set(tmp_path):
+    # three clips stamped with the same start time = the camera clock was reset
+    for n in (797, 798, 799):
+        make_mp4(tmp_path / f"GX010{n}.MP4", datetime(2022, 5, 24, 17, 10, 32), 4.0, [])
+    make_mp4(tmp_path / "GX010827.MP4", CAM, 4.0, [])
+    recs = scan(str(tmp_path))
+    items = {i["files"][0]: i for i in build_plan(recs, config.Settings(), {})}
+    assert [items[f"GX010{n}.MP4"]["time_suspect"] for n in (797, 798, 799)] == [True] * 3
+    assert not any(items[f"GX010{n}.MP4"]["include"] for n in (797, 798, 799))
+    assert not items["GX010827.MP4"]["time_suspect"] and items["GX010827.MP4"]["include"]
+
+    key = items["GX010798.MP4"]["id"]
+    items = {i["files"][0]: i for i in build_plan(
+        recs, config.Settings(), {key: {"local_time": "2025-04-03T21:05"}})}
+    fixed = items["GX010798.MP4"]
+    assert fixed["title"] == "2025-04-03 21:05 JST" and fixed["time_source"] == "manual"
+    assert fixed["recording_date"] == "2025-04-03T00:00:00Z" and fixed["utc"].startswith("2025-04-03T12:05")
+    assert not fixed["time_suspect"] and fixed["include"]
+
+
+def _gopro_clip(path, utc_start, seconds, camera_offset_h):
+    """Like a real HERO: mvhd in UTC, file time = camera's local clock at the end."""
+    make_mp4(path, utc_start, seconds, [])
+    end_local = utc_start + timedelta(hours=camera_offset_h, seconds=seconds)
+    ts = end_local.timestamp()  # naive -> this PC's zone; fromtimestamp() reverses it
+    os.utime(path, (ts, ts))
+
+
+def test_each_recording_uses_the_zone_the_camera_was_in(tmp_path):
+    _gopro_clip(tmp_path / "GX010827.MP4", datetime(2025, 4, 4, 8, 33, 21), 10, 8)   # Taiwan
+    _gopro_clip(tmp_path / "GX010996.MP4", datetime(2025, 4, 7, 8, 51, 29), 10, 9)   # Japan
+    recs = scan(str(tmp_path))
+    items = {i["files"][0]: i for i in build_plan(recs, config.Settings(), {})}
+    tw, jp = items["GX010827.MP4"], items["GX010996.MP4"]
+    assert tw["title"] == "2025-04-04 16:33" and tw["tz"] == "Asia/Taipei" and tw["tz_label"] == ""
+    assert jp["title"] == "2025-04-07 17:51 JST" and jp["tz"] == "Asia/Tokyo"
+    assert tw["tz_source"] == jp["tz_source"] == "file"
+    assert tw["recording_date"] == "2025-04-04T00:00:00Z"
+
+    # the user can re-pick a zone; the title follows, the moment in time stays the same
+    key = tw["id"]
+    tw2 = build_plan(recs, config.Settings(), {key: {"tz": "Asia/Tokyo"}})[0]
+    assert tw2["title"] == "2025-04-04 17:33 JST" and tw2["utc"] == tw["utc"]
+    # a typed time is read in the recording's zone
+    tw3 = build_plan(recs, config.Settings(), {key: {"local_time": "2025-04-04T09:00"}})[0]
+    assert tw3["title"] == "2025-04-04 09:00" and tw3["utc"].startswith("2025-04-04T01:00")
+
+
+def test_title_edit_persists_across_restarts_but_ticks_do_not(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    item = api.scan(str(tmp_path))["items"][0]
+    assert item["title"] == "2026-03-15 14:32 JST"  # default, ready to be edited
+    api.edit([item["id"]], {"title": "2026-03-15 14:32 JST 範例標題 (測試)", "include": False})
+
+    item = Api("unused.log").scan(str(tmp_path))["items"][0]  # fresh app start
+    assert item["title"] == "2026-03-15 14:32 JST 範例標題 (測試)" and item["title_locked"]
+    assert item["include"] is True  # a remembered tick could skip or re-upload videos
+
+    api2 = Api("unused.log")
+    api2.scan(str(tmp_path))
+    api2.edit([item["id"]], {"title": None})
+    assert Api("unused.log").scan(str(tmp_path))["items"][0]["title"] == "2026-03-15 14:32 JST"

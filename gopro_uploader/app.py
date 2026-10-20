@@ -13,7 +13,7 @@ from . import config, geocode, merge, preview, youtube
 from .config import TITLE_FORMATS, Settings
 from .planner import build_plan, detect_camera_offset
 from .scanner import scan
-from .store import Store, setup_logging
+from .store import Edits, Store, fingerprint, setup_logging
 
 log = logging.getLogger("app")
 
@@ -29,8 +29,10 @@ class Api:
         self._log_file = log_file
         self._settings = Settings.load()
         self._store = Store()
+        self._edits = Edits()
         self._recs = []
         self._overrides: dict[str, dict] = {}
+        self._fps: dict[str, str] = {}  # recording id -> fingerprint used in edits.json
         self._items: list[dict] = []
         self._yt = None
         self._cancel = False
@@ -99,7 +101,10 @@ class Api:
         self._settings.save()
         self._say(f"掃描 {folder} …")
         self._recs = scan(folder, progress=lambda i, n, name: self._emit("scan", i=i, n=n, name=name))
-        self._overrides = {}
+        self._fps = {r.key: fingerprint({"files": [c.name for c in r.clips],
+                                         "size": sum(c.size for c in r.clips)})
+                     for r in self._recs}
+        self._overrides = {k: ov for k, fp in self._fps.items() if (ov := self._edits.get(fp))}
         res = self._replan()
         nfiles = sum(len(i["files"]) for i in self._items)
         self._say(f"找到 {nfiles} 個檔案，共 {len(self._items)} 段錄影")
@@ -113,6 +118,8 @@ class Api:
                     ov.pop(k, None)
                 else:
                     ov[k] = v
+            if i in self._fps:  # not "include": a remembered tick could re-upload a finished video
+                self._edits.put(self._fps[i], {k: v for k, v in ov.items() if k != "include"})
         return self._replan()
 
     def geocode_all(self):

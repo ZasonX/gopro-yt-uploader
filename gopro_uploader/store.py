@@ -19,6 +19,36 @@ def fingerprint(item: dict) -> str:
     return f"{item['files'][0].upper()}|{item['size']}"
 
 
+def _write_json(path: str, data) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+class Edits:
+    """The user's per-recording edits (title, time, place…) in edits.json, by fingerprint."""
+
+    def __init__(self):
+        self.file = config.path("edits.json")
+        try:
+            with open(self.file, encoding="utf-8") as f:
+                self.data = json.load(f)
+        except (OSError, ValueError):
+            self.data = {}
+
+    def get(self, fp: str) -> dict:
+        return dict(self.data.get(fp, {}))
+
+    def put(self, fp: str, fields: dict) -> None:
+        with _lock:
+            if fields:
+                self.data[fp] = fields
+            else:
+                self.data.pop(fp, None)
+            _write_json(self.file, self.data)
+
+
 class Store:
     def __init__(self):
         self.file = config.path("state.json")
@@ -35,10 +65,7 @@ class Store:
         with _lock:
             rec = self.data.setdefault(fingerprint(item), {})
             rec.update(fields, files=item["files"], updated=datetime.now().isoformat(timespec="seconds"))
-            tmp = self.file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, self.file)
+            _write_json(self.file, self.data)
 
     def append_history(self, item: dict, video_id: str, part_title: str, playlist: str):
         p = config.path("upload_history.csv")
