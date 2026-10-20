@@ -76,6 +76,10 @@ aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: a
 .grp .gh b { font-size: 13px; }
 .badge { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
 button.mini { padding: 1px 8px; font-size: 12px; margin-left: auto; }
+a.mini { font-size: 12px; color: var(--accent2); }
+a.mini:first-of-type { margin-left: auto; }
+.grp.yt { border-color: var(--accent2); }
+.grp.yt .warn, .st.missing { color: var(--accent); }
 .detail .row2 { display: flex; gap: 6px; }
 .detail .row2 > * { flex: 1; }
 .results { display: flex; flex-direction: column; gap: 2px; }
@@ -229,7 +233,10 @@ let map, layers = {};
 const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(0) + " MB";
 const fmtDur = s => { s = Math.round(s); const m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(s%60).padStart(2,"0")}` : `${m}:${String(s%60).padStart(2,"0")}`; };
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const STATUS = { pending: "待上傳", uploading: "上傳中", merging: "合併中", uploaded: "已上傳", error: "失敗", partial: "部分完成" };
+const STATUS = { pending: "待上傳", uploading: "上傳中", merging: "合併中", uploaded: "已上傳", error: "失敗", partial: "部分完成",
+  missing: "YouTube 上已刪除" };
+const PRIVACY = { public: "公開", unlisted: "非公開", private: "私人" };
+const LANG = { "zh-TW": "中文（台灣）", "zh-Hant": "中文（繁體）", ja: "日文", en: "英文" };
 const TSRC = { gps: "GPS", "camera+gps_offset": "相機+GPS校正", camera: "相機時鐘", file_mtime: "檔案時間", manual: "手動" };
 const LSRC = { gps: "GPS", nearby: "推測", manual: "手動" };
 const ZSRC = { file: "從檔案自動判斷", manual: "手動指定", default: "判斷不出來，用預設時區" };
@@ -262,6 +269,7 @@ window.onEvent = ev => {
     if (it.status !== before && selected.has(it.id)) renderDetail();  // lock / unlock its fields
   } else if (ev.type === "done") {
     uploading = false; log(ev.msg, ev.level); refreshButtons(); render();
+    call("refresh_youtube").then(setPlan);  // show what YouTube kept (title, location…)
     $("#upbar").innerHTML = `<b>${esc(ev.msg)}</b>`;
     setTimeout(() => { if (!uploading) $("#upbar").classList.remove("on"); }, 8000);
   }
@@ -477,6 +485,7 @@ function renderDetail() {
 
   if (locked) {
     d.querySelectorAll("section input, section select, section button, #btnResetAll").forEach(el => el.disabled = true);
+    if (one?.yt) d.insertAdjacentHTML("afterbegin", ytBox(one));  // what YouTube has now, on top
     return;
   }
   const save = async fields => setPlan(await call("edit", ids, fields));
@@ -514,6 +523,20 @@ function renderDetail() {
   };
   $("#btnSearch").onclick = doSearch;
   $("#searchQ").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+}
+function ytBox(it) {
+  const row = (k, v) => `<div><span class="hint">${k}</span>　${v}</div>`;
+  return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上目前的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b>
+      <a class="mini" href="https://youtu.be/${esc(y.id)}" target="_blank">打開影片</a>
+      <a class="mini" href="https://studio.youtube.com/video/${esc(y.id)}/edit" target="_blank">在 Studio 修改</a></div>
+    ${y.missing ? '<div class="hint warn">YouTube 上找不到這支影片（可能已刪除）。可以重新勾選上傳。</div>' : `
+      ${row("標題", esc(y.title))}
+      ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
+      ${row("拍攝日期", esc(y.recording_date || "—"))}
+      ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>` : '<span class="warn">沒有</span>')}
+      ${row("標題和說明的語言", LANG[y.title_language] || esc(y.title_language || "—"))}
+      ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}`}
+  </section>`).join("");
 }
 function setPick(on) { pickMode = on; document.body.classList.toggle("pickmode", on); }
 async function applyLocation(lat, lon, place) {

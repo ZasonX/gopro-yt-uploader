@@ -39,6 +39,8 @@ class Api:
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_id: str | None = None
+        self._yt_info: dict[str, dict] = {}   # video id -> what YouTube has now
+        self._yt_checked: set[str] = set()     # ids we asked about (absent from _yt_info = deleted)
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -60,9 +62,43 @@ class Api:
         for it in self._items:  # "uploading" lives only in memory, not in state.json
             if it["id"] == self._uploading_id and it["status"] != "uploaded":
                 it["status"] = "uploading"
+            self._attach_youtube(it)
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items,
                 "camera_offset_hours": round(off.total_seconds() / 3600, 2) if off else None}
+
+    # ------------------------------------------------- YouTube's current data
+    def _attach_youtube(self, it):
+        """Uploaded rows show what YouTube has now (titles edited in Studio, etc.)."""
+        if it["status"] not in ("uploaded", "partial") or not it.get("video_ids"):
+            return
+        vids = it["video_ids"]
+        if not all(v in self._yt_checked for v in vids):
+            return  # not looked up yet (e.g. not signed in): keep the local view
+        it["yt"] = [{"id": v, **self._yt_info[v]} if v in self._yt_info else {"id": v, "missing": True}
+                    for v in vids]
+        live = [y for y in it["yt"] if not y.get("missing")]
+        if not live:
+            # deleted on YouTube: let it be ticked and uploaded again
+            it["status"] = "missing"
+            return
+        it["title"] = live[0]["title"]
+
+    def _sync_youtube(self):
+        vids = [v for it in self._items if it["status"] in ("uploaded", "partial")
+                for v in it.get("video_ids", [])]
+        if not vids or not self._yt:
+            return
+        try:
+            self._yt_info.update(youtube.fetch_videos(self._yt, vids))
+            self._yt_checked.update(vids)
+        except Exception as e:  # noqa: BLE001 - offline etc.: keep the local view
+            log.warning("could not read uploaded videos from YouTube: %s", e)
+            self._say("無法從 YouTube 讀取已上傳影片的資料，先顯示本機紀錄", "error")
+
+    def refresh_youtube(self):
+        self._sync_youtube()
+        return self._replan()
 
     # ---------------------------------------------------------- JS-facing
     def init(self):
@@ -109,6 +145,8 @@ class Api:
                                          "size": sum(c.size for c in r.clips)})
                      for r in self._recs}
         self._overrides = {k: ov for k, fp in self._fps.items() if (ov := self._edits.get(fp))}
+        self._replan()
+        self._sync_youtube()
         res = self._replan()
         nfiles = sum(len(i["files"]) for i in self._items)
         self._say(f"找到 {nfiles} 個檔案，共 {len(self._items)} 段錄影")

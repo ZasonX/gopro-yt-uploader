@@ -309,3 +309,47 @@ def test_uploaded_recordings_cannot_be_edited(tmp_path):
     api._replan()
     res = api.edit([item["id"]], {"title": "改了也沒用"})
     assert res["items"][0]["title"] == "2026-03-15 14:32 JST" and res["items"][0]["edited"] == []
+
+
+def test_uploaded_rows_show_youtube_data_and_deleted_videos_can_be_reuploaded(tmp_path):
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 4.0, [])
+    make_mp4(tmp_path / "GX010798.MP4", CAM.replace(minute=50), 4.0, [])
+    api = Api("unused.log")
+    a, b = api.scan(str(tmp_path))["items"]
+    api.edit([a["id"]], {"title": "2025-04-25 範例車站 東口"})  # the typo, uploaded
+    api._store.update(a, status="uploaded", video_ids=["VIDEO_ID_01"])
+    api._store.update(b, status="uploaded", video_ids=["gone"])
+
+    asked = []
+
+    def fake_fetch(yt, ids):
+        asked.append(sorted(ids))
+        return {"VIDEO_ID_01": {"title": "2025-04-04 範例車站 東口", "privacy": "unlisted",
+                                "recording_date": "2025-04-04", "place": "車站大廳",
+                                "lat": 12.3456, "lon": 22.6543,
+                                "title_language": "zh-TW", "audio_language": "zh-TW"}}
+
+    youtube_fetch, youtube.fetch_videos = youtube.fetch_videos, fake_fetch
+    try:
+        api._yt = object()  # "signed in"
+        items = {i["files"][0]: i for i in api.scan(str(tmp_path))["items"]}
+    finally:
+        youtube.fetch_videos = youtube_fetch
+    assert asked == [["VIDEO_ID_01", "gone"]]
+    a, b = items["GX010797.MP4"], items["GX010798.MP4"]
+    assert a["status"] == "uploaded" and a["title"] == "2025-04-04 範例車站 東口"
+    assert a["yt"][0]["place"] == "車站大廳"
+    assert b["status"] == "missing" and b["yt"] == [{"id": "gone", "missing": True}]
+    assert not api._locked(b["id"])  # can be edited and ticked again
+
+
+def test_not_signed_in_keeps_the_local_view(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    a = api.scan(str(tmp_path))["items"][0]
+    api._store.update(a, status="uploaded", video_ids=["VIDEO_ID_01"])
+    a = api.scan(str(tmp_path))["items"][0]  # api._yt is None
+    assert a["status"] == "uploaded" and "yt" not in a

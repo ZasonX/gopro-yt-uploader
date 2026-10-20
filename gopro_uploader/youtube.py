@@ -125,6 +125,28 @@ def video_body(title, description, category_id, privacy, recording_date,
     return body
 
 
+def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
+    """What YouTube has now for these videos (1 quota unit per 50). Missing ids are left out."""
+    out = {}
+    ids = list(dict.fromkeys(video_ids))
+    for k in range(0, len(ids), 50):
+        r = _execute(yt.videos().list(id=",".join(ids[k:k + 50]),
+                                      part="snippet,status,recordingDetails", maxResults=50))
+        for v in r.get("items", []):
+            sn, rd = v.get("snippet", {}), v.get("recordingDetails", {})
+            loc = rd.get("location") or {}
+            out[v["id"]] = {
+                "title": sn.get("title", ""),
+                "privacy": v.get("status", {}).get("privacyStatus"),
+                "recording_date": (rd.get("recordingDate") or "")[:10],
+                "place": rd.get("locationDescription", ""),
+                "lat": loc.get("latitude"), "lon": loc.get("longitude"),
+                "title_language": sn.get("defaultLanguage"),
+                "audio_language": sn.get("defaultAudioLanguage"),
+            }
+    return out
+
+
 def set_location(yt, video_id: str, recording_date: str, lat, lon, place) -> bool:
     """Write the location with videos.update and read it back.
 
