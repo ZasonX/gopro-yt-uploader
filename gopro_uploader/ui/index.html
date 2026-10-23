@@ -34,7 +34,8 @@ header .folder input { width: 100%; }
 .account { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .account .ch { color: var(--ok); font-weight: 600; }
 
-main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 32vw, 460px); min-height: 0; }
+/* left: the list; right: what you work on (big preview, prev/next, fields, map) */
+main { display: grid; grid-template-columns: minmax(420px, 45fr) minmax(460px, 55fr); min-height: 0; }
 .tablewrap { overflow: auto; min-height: 0; }
 table { border-collapse: collapse; width: 100%; }
 th, td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
@@ -43,11 +44,14 @@ tr.row { cursor: pointer; }
 tr.row:hover { background: color-mix(in srgb, var(--sel) 50%, transparent); }
 tr.row.sel { background: var(--sel); }
 tr.row.done td { color: var(--muted); }
-td.title input { border-color: transparent; background: transparent; width: 170px; padding: 2px 4px; }
+td.title { width: 100%; }
+td.title input { border-color: transparent; background: transparent; width: 100%; min-width: 160px; padding: 2px 4px; }
+td.title .fn { display: block; padding-left: 5px; font: 11px Consolas, monospace; color: var(--muted); }
+th.inc label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
 td.title input:focus { border-color: var(--accent2); background: var(--panel); }
 td.title input.locked { font-weight: 600; }
 td.files { font-family: Consolas, monospace; font-size: 12px; }
-td.place { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
 .tag.gps { color: var(--ok); border-color: var(--ok); }
 .tag.nearby, .tag.manual { color: var(--warn); border-color: var(--warn); }
@@ -61,15 +65,23 @@ td.place { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
 
-aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; background: var(--panel); }
-#map { min-height: 200px; }
-#preview { border-bottom: 1px solid var(--line); background: #000; }
+aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: auto; background: var(--panel); }
+#preview { background: #000; flex: none; }
 #preview:empty { display: none; }
-#preview video { display: block; width: 100%; max-height: 32vh; background: #000; }
+#preview video { display: block; width: 100%; max-height: 46vh; background: #000; }
+#nav { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
+#nav:empty { display: none; }
+#nav .where { flex: 1; text-align: center; line-height: 1.3; }
+#nav .where small { display: block; color: var(--muted); font: 11px Consolas, monospace; }
+#nav .inc { display: flex; gap: 6px; align-items: center; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-weight: 600; }
+#nav .inc.on { border-color: var(--ok); color: var(--ok); }
+#mapbox { border-top: 1px solid var(--line); flex: none; }
+#mapbox summary { padding: 8px 12px; cursor: pointer; color: var(--muted); }
+#map { height: 260px; }
 #preview .bar2 { display: flex; gap: 4px; align-items: center; padding: 4px 8px; background: var(--panel); flex-wrap: wrap; }
 #preview .bar2 button { padding: 2px 8px; font-size: 12px; }
 #preview .bar2 button.on { outline: 2px solid var(--accent2); }
-.detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); max-height: 52vh; overflow: auto; }
+.detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: none; }
 .detail h3 { margin: 0; font-size: 13px; }
 .grp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .grp .gh { display: flex; align-items: center; gap: 6px; }
@@ -151,8 +163,9 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   <div class="tablewrap">
     <table>
       <thead><tr>
-        <th><input type="checkbox" id="chkAll" title="全選要上傳的"></th>
-        <th>狀態</th><th>標題</th><th>原始檔</th><th>長度</th><th>大小</th><th>時間</th><th>地點</th>
+        <th class="inc" title="打勾的錄影，會在按「開始上傳」時上傳。點這裡可以全選 / 全部取消">
+          <label><input type="checkbox" id="chkAll">上傳</label></th>
+        <th>狀態</th><th>標題 / 原始檔</th><th>時間</th><th>長度</th><th>地點</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -160,10 +173,11 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   </div>
   <aside>
     <div id="preview"></div>
-    <div id="map"></div>
+    <div id="nav"></div>
     <div class="detail" id="detail">
-      <div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡修改。</div>
+      <div class="hint">點左邊的表格選一段錄影（Ctrl / Shift 可多選），就能在這裡看影片、修改。</div>
     </div>
+    <details id="mapbox" open><summary>地圖（所有錄影的位置）</summary><div id="map"></div></details>
   </aside>
 </main>
 
@@ -335,12 +349,10 @@ function render() {
         return `<input value="${esc(it.title)}" class="${it.title_locked ? "locked" : ""} ${warn ? "mismatch" : ""}"
           title="${onYT ? "已上傳或上傳中；要改請到 YouTube Studio" : warn ? `⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同` : it.title_locked ? "已手動修改；清空可恢復自動標題" : "自動產生，可直接修改"}"
           ${onYT ? "disabled" : ""}>`;
-      })()}</td>
-      <td class="files" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? ` <span class="tag">${it.files.length} 段</span>` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</td>
-      <td>${fmtDur(it.duration)}</td>
-      <td>${fmtSize(it.size)}</td>
+      })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</span></td>
       <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了；預設不上傳，請在右側填入正確時間">⚠ 時間可疑</span>'
         : `<span class="tag ${it.time_source === "gps" ? "gps" : it.time_source === "manual" ? "manual" : ""}">${TSRC[it.time_source] || it.time_source}</span>`}</td>
+      <td>${fmtDur(it.duration)}</td>
       <td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>
     </tr>`).join("");
   summary(); refreshButtons();
@@ -391,6 +403,12 @@ function initMap() {
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
+  const box = $("#mapbox");
+  try { if (localStorage.getItem("mapOpen") === "0") box.open = false; } catch {}
+  box.addEventListener("toggle", () => {
+    try { localStorage.setItem("mapOpen", box.open ? "1" : "0"); } catch {}
+    if (box.open) { map.invalidateSize(); drawMap(selected.size > 0); }
+  });
 }
 function drawMap(fitSelection) {
   Object.values(layers).forEach(l => map.removeLayer(l)); layers = {};
@@ -402,10 +420,7 @@ function drawMap(fitSelection) {
     if (it.track.length > 1) L.polyline(it.track, { color: sel ? "#d93025" : "#1a73e8", weight: sel ? 4 : 2, opacity: sel ? .9 : .45 }).addTo(g);
     L.circleMarker([it.lat, it.lon], { radius: sel ? 8 : 5, color: "#fff", weight: 1.5,
       fillColor: sel ? "#d93025" : (it.loc_source === "gps" ? "#1a73e8" : "#e8a33d"), fillOpacity: 1 })
-      .bindTooltip(`${esc(it.title)}<br>${esc(it.place || "")}`).on("click", () => {
-        selected = new Set([it.id]); lastClicked = it.id; render(); drawMap(); renderDetail();
-        document.querySelector(`tr[data-id="${CSS.escape(it.id)}"]`)?.scrollIntoView({ block: "nearest" });
-      }).addTo(g);
+      .bindTooltip(`${esc(it.title)}<br>${esc(it.place || "")}`).on("click", () => selectItem(it.id)).addTo(g);
     g.addTo(map); layers[it.id] = g;
     if (!fitSelection || sel) pts.push([it.lat, it.lon], ...it.track);
   }
@@ -442,16 +457,55 @@ async function renderPreview() {
   show(0);
 }
 
+// -------------------------------------------------------- prev / next + tick
+function selectItem(id) {
+  selected = new Set([id]); lastClicked = id;
+  document.querySelectorAll("tr.row").forEach(r => r.classList.toggle("sel", r.dataset.id === id));
+  document.querySelector(`tr[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" });
+  drawMap(true); renderDetail();
+}
+function step(delta) {
+  if (!items.length) return;
+  const i = items.findIndex(x => selected.has(x.id));
+  const j = i < 0 ? 0 : Math.min(Math.max(i + delta, 0), items.length - 1);
+  selectItem(items[j].id);
+}
+function renderNav() {
+  const nav = $("#nav"), sel = items.filter(i => selected.has(i.id));
+  if (sel.length !== 1) {
+    nav.innerHTML = sel.length ? `<span class="where">已選 ${sel.length} 段錄影，下面的修改會套用到全部</span>` : "";
+    return;
+  }
+  const it = sel[0], i = items.indexOf(it), onYT = ["uploading", "merging", "uploaded", "partial"].includes(it.status);
+  nav.innerHTML = `
+    <button id="navPrev" ${i === 0 ? "disabled" : ""} title="鍵盤 ↑">◀ 上一支</button>
+    <span class="where">第 ${i + 1} / ${items.length} 段 · ${fmtDur(it.duration)} · ${fmtSize(it.size)}
+      <small>${esc(it.files.join(" + "))}</small></span>
+    ${onYT ? `<span class="inc on">✓ ${STATUS[it.status]}</span>`
+      : `<label class="inc ${it.include ? "on" : ""}" title="打勾的錄影，會在按「開始上傳」時上傳">
+           <input type="checkbox" id="navInc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}>要上傳</label>`}
+    <button id="navNext" ${i === items.length - 1 ? "disabled" : ""} title="鍵盤 ↓">下一支 ▶</button>`;
+  $("#navPrev").onclick = () => step(-1);
+  $("#navNext").onclick = () => step(1);
+  const inc = $("#navInc");
+  if (inc) inc.onchange = async () => setPlan(await call("edit", [it.id], { include: inc.checked }));
+}
+// ↑ / ↓ move through the list, unless you are typing or using the video player
+document.addEventListener("keydown", e => {
+  if (!["ArrowUp", "ArrowDown"].includes(e.key) || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.target.closest("input, select, textarea, video, dialog")) return;
+  e.preventDefault(); step(e.key === "ArrowUp" ? -1 : 1);
+});
+
 function renderDetail() {
-  renderPreview();
+  renderPreview(); renderNav();
   const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
   if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡修改。</div>'; return; }
   const one = sel.length === 1 ? sel[0] : null, ids = [...selected];
   const locked = sel.some(i => ["uploading", "merging", "uploaded", "partial"].includes(i.status));
   if (one && locked) {  // already on YouTube: show YouTube's data instead of fields that can't change
     const busyNow = ["uploading", "merging"].includes(one.status);
-    d.innerHTML = `<h3>${esc(one.files.join(" + "))}</h3>
-      ${busyNow ? '<div class="hint">正在上傳，完成後這裡會顯示 YouTube 上的資料。</div>'
+    d.innerHTML = `${busyNow ? '<div class="hint">正在上傳，完成後這裡會顯示 YouTube 上的資料。</div>'
         : one.yt ? ytBox(one)
         : `<div class="hint">已上傳。登入 YouTube 後重新掃描，這裡會顯示 YouTube 上目前的資料。</div>
            ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
@@ -464,7 +518,6 @@ function renderDetail() {
   const head = (g, label) => `<div class="gh"><b>${label}</b>
     ${edited(g) ? `<span class="badge">已修改</span><button class="mini" data-reset="${g}" title="還原成自動判斷的值">還原</button>` : ""}</div>`;
   d.innerHTML = `
-    <h3>${one ? esc(one.files.join(" + ")) : `已選 ${sel.length} 段錄影（下面的修改會套用到全部）`}</h3>
     ${locked ? `<div class="hint warn">${one ? "這段錄影" : "已選的錄影中有些"}${one?.status === "uploading" || one?.status === "merging" ? "正在上傳" : "已經上傳到 YouTube"}，這裡的修改不會影響 YouTube 上的影片，所以先鎖住了。要改請到 YouTube Studio。</div>` : ""}
     ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
     ${one?.time_suspect ? '<div class="hint warn">⚠ 好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。看完預覽後請填入正確的拍攝時間。</div>' : ""}
