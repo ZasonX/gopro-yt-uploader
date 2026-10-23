@@ -64,7 +64,7 @@ class Api:
                 it["status"] = "uploading"
             self._attach_youtube(it)
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
-        return {"items": self._items,
+        return {"items": self._items, "recent_places": self._settings.recent_places,
                 "camera_offset_hours": round(off.total_seconds() / 3600, 2) if off else None}
 
     # ------------------------------------------------- YouTube's current data
@@ -180,6 +180,8 @@ class Api:
             if skipped:
                 self._say(f"略過 {len(skipped)} 段上傳中或已上傳的錄影；已上傳的請到 YouTube Studio 修改")
             ids = [i for i in ids if i not in skipped]
+        if ids and fields.get("place") and fields.get("lat") is not None and fields.get("lon") is not None:
+            self._remember_place(fields["place"], fields["lat"], fields["lon"])
         for i in ids:
             if any(k != "include" for k in fields):  # ticks are too chatty to log
                 self._log_edit(i, fields)
@@ -192,6 +194,11 @@ class Api:
             if i in self._fps:  # not "include": a remembered tick could re-upload a finished video
                 self._edits.put(self._fps[i], {k: v for k, v in ov.items() if k != "include"})
         return self._replan()
+
+    def _remember_place(self, place: str, lat: float, lon: float):
+        rest = [p for p in self._settings.recent_places if p.get("place") != place]
+        self._settings.recent_places = ([{"place": place, "lat": lat, "lon": lon}] + rest)[:10]
+        self._settings.save()
 
     def reset_edits(self, ids: list[str]):
         """Forget every edit of these recordings (the upload tick stays as it is)."""

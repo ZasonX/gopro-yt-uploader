@@ -137,6 +137,7 @@ def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
             loc = rd.get("location") or {}
             out[v["id"]] = {
                 "title": sn.get("title", ""),
+                "description": sn.get("description", ""),
                 "privacy": v.get("status", {}).get("privacyStatus"),
                 "recording_date": (rd.get("recordingDate") or "")[:10],
                 "place": rd.get("locationDescription", ""),

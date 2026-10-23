@@ -49,6 +49,8 @@ class Settings:
     geocode_lang: str = "zh-TW,ja"
     last_folder: str = ""
     recent_playlists: list[str] = field(default_factory=list)
+    # [{"place", "lat", "lon"}], newest first: quick picks under the place search
+    recent_places: list[dict] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Settings":

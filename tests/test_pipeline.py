@@ -353,3 +353,16 @@ def test_not_signed_in_keeps_the_local_view(tmp_path):
     api._store.update(a, status="uploaded", video_ids=["VIDEO_ID_01"])
     a = api.scan(str(tmp_path))["items"][0]  # api._yt is None
     assert a["status"] == "uploaded" and "yt" not in a
+
+
+def test_places_set_by_search_become_recent_quick_picks(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    key = api.scan(str(tmp_path))["items"][0]["id"]
+    api.edit([key], {"place": "車站大廳", "lat": 12.3456, "lon": 22.6543})
+    api.edit([key], {"place": "範例城", "lat": 11.2345, "lon": 21.5432})
+    res = api.edit([key], {"place": "車站大廳", "lat": 12.3456, "lon": 22.6543})
+    assert [p["place"] for p in res["recent_places"]] == ["車站大廳", "範例城"]  # newest first, no dupes
+    api.edit([key], {"place": "只打名字"})  # no coordinates: not a quick pick
+    assert [p["place"] for p in config.Settings.load().recent_places] == ["車站大廳", "範例城"]

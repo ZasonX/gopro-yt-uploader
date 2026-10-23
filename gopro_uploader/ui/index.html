@@ -90,7 +90,9 @@ a.btnlink:hover { filter: brightness(1.1); }
 .results button { text-align: left; border: none; padding: 4px 6px; }
 .results small { color: var(--muted); display: block; }
 .hint { color: var(--muted); font-size: 12px; }
-.pickmode #map { cursor: crosshair; outline: 3px solid var(--accent2); outline-offset: -3px; }
+.desc { white-space: pre-wrap; max-height: 8em; overflow: auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.chip { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
 
 footer { background: var(--panel); border-top: 1px solid var(--line); }
 #upbar { display: none; align-items: center; gap: 12px; padding: 10px 14px; flex-wrap: wrap;
@@ -160,7 +162,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <div id="preview"></div>
     <div id="map"></div>
     <div class="detail" id="detail">
-      <div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>
+      <div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡修改。</div>
     </div>
   </aside>
 </main>
@@ -231,7 +233,7 @@ const TZS = ["Asia/Tokyo","Asia/Taipei","Asia/Seoul","Asia/Hong_Kong","Asia/Shan
   "Europe/Paris","Europe/Berlin","Europe/Rome","America/New_York","America/Chicago","America/Denver",
   "America/Los_Angeles","Pacific/Honolulu","Australia/Sydney","Pacific/Auckland","UTC"];
 const $ = s => document.querySelector(s);
-let api, S = {}, items = [], selected = new Set(), lastClicked = null, uploading = false, pickMode = false;
+let api, S = {}, items = [], selected = new Set(), lastClicked = null, uploading = false;
 let map, layers = {};
 
 const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(0) + " MB";
@@ -298,7 +300,9 @@ function setPlan(res) {
   for (const id of [...selected]) if (!items.find(i => i.id === id)) selected.delete(id);
   $("#offset").textContent = res.camera_offset_hours != null
     ? `相機時鐘比 UTC 快 ${res.camera_offset_hours} 小時（由 GPS 自動偵測）` : "";
-  render(); drawMap(); renderDetail();
+  if (res.recent_places) S.recent_places = res.recent_places;
+  // follow the selection, so a location just set is shown up close (not the whole trip)
+  render(); drawMap(selected.size > 0); renderDetail();
 }
 
 function statusHtml(it) {
@@ -387,10 +391,6 @@ function initMap() {
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
-  map.on("click", async e => {
-    if (!pickMode || !selected.size) return;
-    await applyLocation(e.latlng.lat, e.latlng.lng, null);
-  });
 }
 function drawMap(fitSelection) {
   Object.values(layers).forEach(l => map.removeLayer(l)); layers = {};
@@ -445,7 +445,7 @@ async function renderPreview() {
 function renderDetail() {
   renderPreview();
   const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
-  if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡改地點。</div>'; setPick(false); return; }
+  if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡修改。</div>'; return; }
   const one = sel.length === 1 ? sel[0] : null, ids = [...selected];
   const locked = sel.some(i => ["uploading", "merging", "uploaded", "partial"].includes(i.status));
   if (one && locked) {  // already on YouTube: show YouTube's data instead of fields that can't change
@@ -456,7 +456,6 @@ function renderDetail() {
         : `<div class="hint">已上傳。登入 YouTube 後重新掃描，這裡會顯示 YouTube 上目前的資料。</div>
            ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
              <a class="btnlink" href="https://studio.youtube.com/video/${esc(v)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a></div>`).join("")}`}`;
-    setPick(false);
     return;
   }
   // which groups of fields the user has changed (on any of the selected recordings)
@@ -489,13 +488,14 @@ function renderDetail() {
       <label class="f">地點名稱
         <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "例如：範例車站" : "輸入後套用到全部已選的錄影"}">
       </label>
-      <label class="f">座標<span class="hint">（${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}，${LSRC[one.loc_source] || ""}` : "沒有"}）</span>
-        <div class="row2"><button id="btnPickMap">${pickMode ? "取消地圖點選" : "在地圖上點選"}</button></div>
-      </label>
-      <label class="f">或搜尋地點（會同時設定名稱和座標）
+      <div class="hint">座標：${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}（${LSRC[one.loc_source] || ""}）` : sel.length > 1 ? "—" : "沒有"}</div>
+      <label class="f">搜尋地點（會同時設定名稱和座標）
         <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱" style="flex:1"><button id="btnSearch">搜尋</button></div>
       </label>
       <div class="results" id="results"></div>
+      ${(S.recent_places || []).length ? `<div class="f"><span class="hint">最近用過的地點（點一下套用）</span>
+        <div class="chips">${S.recent_places.map((p, i) => `<button class="chip" data-recent="${i}" title="${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}">${esc(p.place)}</button>`).join("")}</div>
+      </div>` : ""}
     </section>
     ${sel.some(i => i.edited.length) ? `<button id="btnResetAll">還原${one ? "這段" : "已選錄影"}的所有修改</button>` : ""}`;
 
@@ -525,7 +525,9 @@ function renderDetail() {
     if (confirm(`要還原${one ? "這段錄影" : ` ${sel.length} 段錄影`}的標題、時間、時區、地點，全部回到自動判斷的值嗎？`))
       setPlan(await call("reset_edits", ids));
   };
-  $("#btnPickMap").onclick = () => { setPick(!pickMode); renderDetail(); };
+  d.querySelectorAll("[data-recent]").forEach(b => b.onclick = () => {
+    const p = S.recent_places[+b.dataset.recent]; applyLocation(p.lat, p.lon, p.place);
+  });
   const doSearch = async () => {
     const q = $("#searchQ").value.trim(); if (!q) return;
     $("#results").innerHTML = '<span class="hint">搜尋中…</span>';
@@ -544,6 +546,7 @@ function ytBox(it) {
   return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上目前的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b></div>
     ${y.missing ? '<div class="hint warn">YouTube 上找不到這支影片（可能已刪除）。可以重新勾選上傳。</div>' : `
       ${row("標題", esc(y.title))}
+      ${row("說明", y.description ? `<span class="desc">${esc(y.description)}</span>` : '<span class="hint">（空白）</span>')}
       ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
       ${row("拍攝日期", esc(y.recording_date || "—"))}
       ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>` : '<span class="warn">沒有</span>')}
@@ -555,15 +558,8 @@ function ytBox(it) {
       </div>`}
   </section>`).join("");
 }
-function setPick(on) { pickMode = on; document.body.classList.toggle("pickmode", on); }
 async function applyLocation(lat, lon, place) {
-  const fields = { lat, lon };
-  fields.place = place ?? null;
-  setPlan(await call("edit", [...selected], fields));
-  if (place == null) {  // map click: look up the name
-    busy("查詢地名…"); setPlan(await call("geocode_all")); busy(null);
-  }
-  setPick(false); renderDetail();
+  setPlan(await call("edit", [...selected], { lat, lon, place }));
 }
 
 // --------------------------------------------------------------------- header
