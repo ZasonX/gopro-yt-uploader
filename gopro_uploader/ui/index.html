@@ -66,19 +66,19 @@ td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
 
 aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: auto; background: var(--panel); }
-#preview { background: #000; flex: none; }
-#preview:empty { display: none; }
-/* big enough to recognise the scene, small enough to keep the fields in view */
-#preview video { display: block; width: auto; max-width: 100%; height: 26vh; margin: 0 auto; background: #000; }
+/* preview and map side by side on top, so neither wastes the full width */
+.media { display: grid; grid-template-columns: 1fr 1fr; height: 30vh; min-height: 220px; flex: none; border-bottom: 1px solid var(--line); }
+#preview { background: #000; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#preview:empty { background: var(--bg); align-items: center; justify-content: center; }
+#preview:empty::before { content: "選一段錄影，這裡會播放預覽"; color: var(--muted); }
+#preview video { display: block; flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
 #nav { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
 #nav:empty { display: none; }
 #nav .where { flex: 1; text-align: center; line-height: 1.3; }
 #nav .where small { display: block; color: var(--muted); font: 11px Consolas, monospace; }
 #nav .inc { display: flex; gap: 6px; align-items: center; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-weight: 600; }
 #nav .inc.on { border-color: var(--ok); color: var(--ok); }
-#mapbox { border-top: 1px solid var(--line); flex: none; }
-#mapbox summary { padding: 8px 12px; cursor: pointer; color: var(--muted); }
-#map { height: 260px; }
+#map { height: 100%; min-width: 0; border-left: 1px solid var(--line); }
 #preview .bar2 { display: flex; gap: 4px; align-items: center; padding: 4px 8px; background: var(--panel); flex-wrap: wrap; }
 #preview .bar2 button { padding: 2px 8px; font-size: 12px; }
 #preview .bar2 button.on { outline: 2px solid var(--accent2); }
@@ -173,12 +173,11 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <div id="empty" class="empty">選擇資料夾後會列出影片。<br>GoPro 長片被切成的多個分段（GX01…、GX02…）會自動歸成同一段錄影。</div>
   </div>
   <aside>
-    <div id="preview"></div>
+    <div class="media"><div id="preview"></div><div id="map"></div></div>
     <div id="nav"></div>
     <div class="detail" id="detail">
       <div class="hint">點左邊的表格選一段錄影（Ctrl / Shift 可多選），就能在這裡看影片、修改。</div>
     </div>
-    <details id="mapbox" open><summary>地圖（所有錄影的位置）</summary><div id="map"></div></details>
   </aside>
 </main>
 
@@ -404,12 +403,7 @@ function initMap() {
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
-  const box = $("#mapbox");
-  try { if (localStorage.getItem("mapOpen") === "0") box.open = false; } catch {}
-  box.addEventListener("toggle", () => {
-    try { localStorage.setItem("mapOpen", box.open ? "1" : "0"); } catch {}
-    if (box.open) { map.invalidateSize(); drawMap(selected.size > 0); }
-  });
+  new ResizeObserver(() => map.invalidateSize()).observe($("#map"));  // window / panel resizes
 }
 function drawMap(fitSelection) {
   Object.values(layers).forEach(l => map.removeLayer(l)); layers = {};
