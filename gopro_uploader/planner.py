@@ -131,8 +131,9 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             "loc_source": "gps" if track else None,
             "track": track,
             "place": "",
-            # don't upload a wrong date by accident: suspect times start unticked
-            "include": not (tsrc not in ("gps", "manual") and cam_time in shared),
+            # opt-in: nothing is uploaded unless the user ticks it (a folder can hold
+            # hundreds of clips; ticking all by default made "開始上傳" a trap)
+            "include": False,
             "scan_errors": [f"{c.name}: {c.error}" for c in rec.clips if c.error],
         }
         items.append(item)
@@ -171,6 +172,27 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
 
 
 _DATE_IN_TITLE = re.compile(r"(\d{4})\s*[-/年.]?\s*(\d{1,2})\s*[-/月.]?\s*(\d{1,2})")
+
+
+_LEADING_DATE = re.compile(
+    r"^(?P<y>\d{4})(?P<s1>\s*[-/年.]?\s*)(?P<m>\d{1,2})(?P<s2>\s*[-/月.]?\s*)(?P<d>\d{1,2})(?P<s3>日?)"
+    r"(?P<time>\s+\d{1,2}:\d{2})?")
+
+
+def retime_title(title: str, local: datetime) -> str:
+    """Put the recording's date (and time, if the title had one) at the start of a typed title.
+
+    "2022-05-25 走到出口" + 2025-04-04 13:10 -> "2025-04-04 走到出口";
+    the user's own words after the date are never touched.
+    """
+    m = _LEADING_DATE.match(title)
+    if not m:
+        return title
+    pad = lambda v, src: f"{v:02d}" if len(src) == 2 else str(v)  # noqa: E731 - keep their style
+    new = f"{local.year}{m['s1']}{pad(local.month, m['m'])}{m['s2']}{pad(local.day, m['d'])}{m['s3']}"
+    if m["time"]:
+        new += m["time"][:len(m["time"]) - len(m["time"].lstrip())] + local.strftime("%H:%M")
+    return new + title[m.end():]
 
 
 def _date_mismatch(title: str, local: datetime) -> bool:

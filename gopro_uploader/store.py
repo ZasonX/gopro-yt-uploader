@@ -93,4 +93,6 @@ def setup_logging() -> str:
         handlers.append(logging.StreamHandler(sys.stderr))
     logging.basicConfig(level=logging.INFO, handlers=handlers,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # the OAuth helper logs the sign-in URL and the one-time auth code; keep those out of logs
+    logging.getLogger("google_auth_oauthlib").setLevel(logging.WARNING)
     return log_file

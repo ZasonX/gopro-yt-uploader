@@ -7,6 +7,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root {
+  color-scheme: light dark;  /* native controls (date picker icon) follow the theme */
   --bg: #f6f7f9; --panel: #fff; --line: #dfe3e8; --text: #1d2228; --muted: #6b7480;
   --accent: #d93025; --accent2: #1a73e8; --ok: #188038; --warn: #b06000; --sel: #e8f0fe;
 }
@@ -85,6 +86,9 @@ aside { border-left: 1px solid var(--line); display: flex; flex-direction: colum
 .detail { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: none; }
 .detail h3 { margin: 0; font-size: 13px; }
 .grp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+/* wide window: label and field on one line; narrow: stacked */
+.grp label.f { display: grid; grid-template-columns: 7.5em 1fr; align-items: center; gap: 8px; font-size: 12px; }
+@media (max-width: 1100px) { .grp label.f { display: flex; flex-direction: column; align-items: stretch; gap: 2px; } }
 .grp .gh { display: flex; align-items: center; gap: 6px; }
 .grp .gh b { font-size: 13px; }
 .badge { font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
@@ -275,6 +279,7 @@ async function call(name, ...args) {
 
 window.onEvent = ev => {
   if (ev.type === "log") log(ev.msg, ev.level);
+  else if (ev.type === "channel") { setChannel(ev.name); log(`已登入 YouTube 頻道：${ev.name}`); }
   else if (ev.type === "scan") busy(`讀取中 ${ev.i} / ${ev.n}：${ev.name}`);
   else if (ev.type === "geocode") busy(`查詢地名 ${ev.i} / ${ev.n}：${ev.place}`);
   else if (ev.type === "item" || ev.type === "progress") {
@@ -370,7 +375,10 @@ function refreshButtons() {
   $("#btnScan").disabled = !S.last_folder || uploading;
   $("#btnPick").disabled = uploading;
   $("#btnGeocode").disabled = !has || uploading || !items.some(i => i.lat != null && !i.place);
-  $("#btnUpload").disabled = !has || uploading || !items.some(i => i.include && i.status !== "uploaded");
+  const todo = items.filter(i => i.include && i.status !== "uploaded").length;
+  $("#btnUpload").disabled = !has || uploading || !todo;
+  $("#btnUpload").textContent = todo ? `開始上傳（${todo} 段）` : "開始上傳";
+  $("#btnUpload").title = todo ? "上傳表格中「上傳」欄打勾的錄影" : "先在表格的「上傳」欄，或右側的「要上傳」打勾";
   $("#btnCancel").disabled = !uploading;
 }
 
@@ -519,13 +527,14 @@ function renderDetail() {
     ${locked ? "" : '<div class="hint">改完按 Enter 或點別的地方就會自動儲存。</div>'}
     ${one ? `<section class="grp">${head("title", "標題")}
       <input id="titleInput" value="${esc(one.title)}">
-      ${one.title_date_mismatch ? `<div class="hint warn">⚠ 標題裡的日期跟拍攝時間（${esc(one.local.slice(0, 10))}）不同。手動改過的標題不會跟著時間更新；按「還原」可恢復自動標題。</div>` : ""}
+      ${one.title_date_mismatch ? `<div class="hint warn">⚠ 標題裡的日期跟拍攝時間（${esc(one.local.slice(0, 10))}）不同。
+        <button class="mini" id="btnFixDate">只把標題開頭的日期改成 ${esc(one.local.slice(0, 10))}</button></div>` : ""}
     </section>` : ""}
     <section class="grp">${head("time", "拍攝時間")}
-      ${one ? `<label class="f">日期時間<span class="hint">（${TSRC[one.time_source] || one.time_source}）</span>
+      ${one ? `<label class="f"><span>日期時間 <span class="hint">${TSRC[one.time_source] || one.time_source}</span></span>
         <input id="timeInput" type="datetime-local" value="${esc(one.local.slice(0, 16).replace(" ", "T"))}">
       </label>` : ""}
-      <label class="f">時區${one ? `<span class="hint">（${ZSRC[one.tz_source]}）</span>` : ""}
+      <label class="f"><span>時區${one ? ` <span class="hint">${one.tz_source === "file" ? "自動" : one.tz_source === "manual" ? "手動" : "預設"}</span>` : ""}</span>
         <select id="tzInput">
           <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從檔案判斷）"}</option>
           ${TZS.map(t => `<option value="${t}" ${one && one.tz_source === "manual" && one.tz === t ? "selected" : ""}>${t}${t === S.home_tz ? "（家鄉，標題不標示）" : ""}</option>`).join("")}
@@ -533,12 +542,12 @@ function renderDetail() {
       </label>
     </section>
     <section class="grp">${head("place", "拍攝地點（上傳到 YouTube 的地點資訊）")}
-      <label class="f">地點名稱
+      <label class="f"><span>地點名稱</span>
         <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "例如：範例車站" : "輸入後套用到全部已選的錄影"}">
       </label>
       <div class="hint">座標：${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}（${LSRC[one.loc_source] || ""}）` : sel.length > 1 ? "—" : "沒有"}</div>
-      <label class="f">搜尋地點（會同時設定名稱和座標）
-        <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱" style="flex:1"><button id="btnSearch">搜尋</button></div>
+      <label class="f"><span title="會同時設定名稱和座標">搜尋地點</span>
+        <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱（會同時設定名稱和座標）" style="flex:1"><button id="btnSearch">搜尋</button></div>
       </label>
       <div class="results" id="results"></div>
       ${(S.recent_places || []).length ? `<div class="f"><span class="hint">最近用過的地點（點一下套用）</span>
@@ -562,12 +571,16 @@ function renderDetail() {
     el.onblur = () => { if (el.value !== orig) fn(el.value.trim()); };
   };
   onCommit($("#titleInput"), v => save({ title: v || null }));
-  // a fixed time is trustworthy again, so tick it for upload
-  onCommit($("#timeInput"), v => v && save({ local_time: v, include: true }));
+  const fix = $("#btnFixDate");
+  if (fix) fix.onclick = async () => setPlan(await call("fix_title_dates", ids));
+  onCommit($("#timeInput"), v => v && save({ local_time: v }));
   onCommit($("#placeInput"), v => save({ place: v || null }));
   $("#tzInput").onchange = e => save({ tz: e.target.value || null });
-  d.querySelectorAll("[data-reset]").forEach(b => b.onclick = () =>
-    save(Object.fromEntries(GROUPS[b.dataset.reset].map(k => [k, null]))));
+  d.querySelectorAll("[data-reset]").forEach(b => b.onclick = () => {
+    const g = b.dataset.reset;
+    if (g === "title" && !confirm(`會刪掉你打的標題，恢復成程式自動產生的標題${one ? `（例如「${one.local.slice(0, 16)}」）` : ""}。確定嗎？`)) return;
+    save(Object.fromEntries(GROUPS[g].map(k => [k, null])));
+  });
   const all = $("#btnResetAll");
   if (all) all.onclick = async () => {
     if (confirm(`要還原${one ? "這段錄影" : ` ${sel.length} 段錄影`}的標題、時間、時區、地點，全部回到自動判斷的值嗎？`))
@@ -638,8 +651,10 @@ $("#btnPick").onclick = async () => { const f = await call("pick_folder"); if (f
 $("#btnScan").onclick = () => doScan(S.last_folder);
 $("#btnGeocode").onclick = async () => { busy("查詢地名…"); try { setPlan(await call("geocode_all")); } finally { busy(null); } };
 $("#btnUpload").onclick = async () => {
-  const n = items.filter(i => i.include && i.status !== "uploaded").length;
-  if (!confirm(`要上傳 ${n} 段錄影到播放清單「${S.playlist}」嗎？`)) return;
+  const list = items.filter(i => i.include && i.status !== "uploaded"), n = list.length;
+  const names = list.slice(0, 10).map(i => `・${i.title}（${i.files.join(" + ")}）`).join("\n")
+    + (n > 10 ? `\n…還有 ${n - 10} 段` : "");
+  if (!confirm(`要上傳下面這 ${n} 段錄影到播放清單「${S.playlist}」嗎？\n\n${names}`)) return;
   upTotal = n; upDone = 0;
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
@@ -689,6 +704,7 @@ window.addEventListener("pywebviewready", async () => {
   S = INIT.settings;
   fillSelect($("#title_format"), Object.keys(INIT.title_formats), Object.values(INIT.title_formats));
   loadSettingsUI(); setChannel(INIT.channel); initMap(); refreshButtons();
+  if (INIT.login_expired) { $("#channel").textContent = "⚠ 登入已過期，請重新登入"; $("#channel").className = "hint warn"; }
   log(`資料與紀錄存放在 ${INIT.app_dir}`);
   if (!INIT.has_secret) log("第一次使用：請先在「設定」匯入 client_secret.json，再按「登入」。");
 });

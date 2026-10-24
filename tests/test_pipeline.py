@@ -166,8 +166,8 @@ def test_reset_clock_is_suspect_until_time_is_set(tmp_path):
     recs = scan(str(tmp_path))
     items = {i["files"][0]: i for i in build_plan(recs, config.Settings(), {})}
     assert [items[f"GX010{n}.MP4"]["time_suspect"] for n in (797, 798, 799)] == [True] * 3
-    assert not any(items[f"GX010{n}.MP4"]["include"] for n in (797, 798, 799))
-    assert not items["GX010827.MP4"]["time_suspect"] and items["GX010827.MP4"]["include"]
+    assert not items["GX010827.MP4"]["time_suspect"]
+    assert not any(i["include"] for i in items.values())  # opt-in: nothing ticked by default
 
     key = items["GX010798.MP4"]["id"]
     items = {i["files"][0]: i for i in build_plan(
@@ -175,7 +175,7 @@ def test_reset_clock_is_suspect_until_time_is_set(tmp_path):
     fixed = items["GX010798.MP4"]
     assert fixed["title"] == "2025-04-03 21:05 JST" and fixed["time_source"] == "manual"
     assert fixed["recording_date"] == "2025-04-03T00:00:00Z" and fixed["utc"].startswith("2025-04-03T12:05")
-    assert not fixed["time_suspect"] and fixed["include"]
+    assert not fixed["time_suspect"]
 
 
 def _gopro_clip(path, utc_start, seconds, camera_offset_h):
@@ -217,11 +217,11 @@ def test_edits_are_logged_marked_and_resettable(tmp_path, caplog):
     assert "修改 GX010798.MP4：地點名稱 → 範例車站，拍攝時間 → 2025-04-04T09:00" in caplog.text
     assert res["items"][0]["edited"] == ["local_time", "place"]
 
-    api.edit([item["id"]], {"include": False})
+    api.edit([item["id"]], {"include": True})
     res = api.reset_edits([item["id"]])
     it = res["items"][0]
     assert it["edited"] == [] and it["place"] == "" and it["time_source"] != "manual"
-    assert it["include"] is False  # the tick is not an "edit" to undo
+    assert it["include"] is True  # the tick is not an "edit" to undo
     assert Api("unused.log").scan(str(tmp_path))["items"][0]["edited"] == []  # and it's saved
 
 
@@ -231,11 +231,11 @@ def test_title_edit_persists_across_restarts_but_ticks_do_not(tmp_path):
     api = Api("unused.log")
     item = api.scan(str(tmp_path))["items"][0]
     assert item["title"] == "2026-03-15 14:32 JST"  # default, ready to be edited
-    api.edit([item["id"]], {"title": "2026-03-15 14:32 JST 範例標題 (測試)", "include": False})
+    api.edit([item["id"]], {"title": "2026-03-15 14:32 JST 範例標題 (測試)", "include": True})
 
     item = Api("unused.log").scan(str(tmp_path))["items"][0]  # fresh app start
     assert item["title"] == "2026-03-15 14:32 JST 範例標題 (測試)" and item["title_locked"]
-    assert item["include"] is True  # a remembered tick could skip or re-upload videos
+    assert item["include"] is False  # ticks are not remembered: a restart never queues uploads
 
     api2 = Api("unused.log")
     api2.scan(str(tmp_path))
@@ -366,3 +366,32 @@ def test_places_set_by_search_become_recent_quick_picks(tmp_path):
     assert [p["place"] for p in res["recent_places"]] == ["車站大廳", "範例城"]  # newest first, no dupes
     api.edit([key], {"place": "只打名字"})  # no coordinates: not a quick pick
     assert [p["place"] for p in config.Settings.load().recent_places] == ["車站大廳", "範例城"]
+
+
+def test_retime_title_keeps_the_users_words():
+    from gopro_uploader.planner import retime_title
+    t = datetime(2025, 4, 4, 13, 10)
+    assert retime_title("2022-05-25 走到出口", t) == "2025-04-04 走到出口"
+    assert retime_title("2022-05-25 01:10 走到出口", t) == "2025-04-04 13:10 走到出口"
+    assert retime_title("2022-05-25 01:10 JST 走到出口", t) == "2025-04-04 13:10 JST 走到出口"
+    assert retime_title("2022/05/25 走到出口", t) == "2025/04/04 走到出口"
+    assert retime_title("2022年05月25日 走到出口", t) == "2025年04月04日 走到出口"
+    assert retime_title("走到出口", t) == "走到出口"  # no leading date: untouched
+
+
+def test_changing_the_time_updates_a_typed_title_instead_of_warning(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010798.MP4", datetime(2022, 5, 24, 17, 10, 32), 4.0, [])
+    api = Api("unused.log")
+    key = api.scan(str(tmp_path))["items"][0]["id"]
+    api.edit([key], {"title": "2022-05-25 走到出口"})
+    it = api.edit([key], {"local_time": "2025-04-04T13:10"})["items"][0]
+    assert it["title"] == "2025-04-04 走到出口" and not it["title_date_mismatch"]
+    # and it is saved like any other edit
+    assert Api("unused.log").scan(str(tmp_path))["items"][0]["title"] == "2025-04-04 走到出口"
+
+    # a date typed wrong by hand can be fixed without losing the words
+    api.edit([key], {"title": "2025-04-25 走到出口"})
+    assert api._items[0]["title_date_mismatch"]
+    it = api.fix_title_dates([key])["items"][0]
+    assert it["title"] == "2025-04-04 走到出口"

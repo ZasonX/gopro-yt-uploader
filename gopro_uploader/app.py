@@ -6,12 +6,13 @@ import logging
 import os
 import sys
 import threading
+from datetime import datetime
 
 import webview
 
 from . import config, geocode, merge, preview, youtube
 from .config import TITLE_FORMATS, Settings
-from .planner import build_plan, detect_camera_offset
+from .planner import build_plan, detect_camera_offset, retime_title
 from .scanner import scan
 from .store import Edits, Store, fingerprint, setup_logging
 
@@ -114,7 +115,11 @@ class Api:
                 channel = youtube.channel_title(self._yt)
             except Exception as e:  # noqa: BLE001
                 log.warning("channel lookup failed: %s", e)
+        if not yt_ok and youtube.has_saved_login():
+            self._say("YouTube 登入已過期，請按右上角「登入」重新登入。"
+                      "（Google Cloud 專案還在「測試中」時，登入每 7 天就會過期）", "error")
         return {"settings": self._settings.to_dict(), "title_formats": TITLE_FORMATS,
+                "login_expired": not yt_ok and youtube.has_saved_login(),
                 "has_secret": youtube.has_client_secret(), "channel": channel,
                 "ffmpeg": merge.ffmpeg_exe() is not None, "app_dir": config.app_dir(),
                 "log_file": self._log_file}
@@ -191,9 +196,33 @@ class Api:
                     ov.pop(k, None)
                 else:
                     ov[k] = v
-            if i in self._fps:  # not "include": a remembered tick could re-upload a finished video
-                self._edits.put(self._fps[i], {k: v for k, v in ov.items() if k != "include"})
+            self._save_edits(i)
+        if ids and ("local_time" in fields or "tz" in fields):
+            self._retime_titles(ids)
         return self._replan()
+
+    def fix_title_dates(self, ids: list[str]):
+        self._retime_titles([i for i in ids if not self._locked(i)])
+        return self._replan()
+
+    def _save_edits(self, item_id: str):
+        if item_id in self._fps:  # not "include": a remembered tick could re-upload a finished video
+            ov = self._overrides.get(item_id, {})
+            self._edits.put(self._fps[item_id], {k: v for k, v in ov.items() if k != "include"})
+
+    def _retime_titles(self, ids: list[str]):
+        """A new time also fixes the date / time at the start of a hand-typed title."""
+        self._replan()
+        by_id = {it["id"]: it for it in self._items}
+        for i in ids:
+            ov, it = self._overrides.get(i, {}), by_id.get(i)
+            if not it or "title" not in ov:
+                continue
+            new = retime_title(ov["title"], datetime.fromisoformat(it["local"]))
+            if new != ov["title"]:
+                ov["title"] = new
+                self._save_edits(i)
+                self._say(f"標題的時間跟著改成：{new}")
 
     def _remember_place(self, place: str, lat: float, lon: float):
         rest = [p for p in self._settings.recent_places if p.get("place") != place]
@@ -291,8 +320,11 @@ class Api:
             self._emit("done", msg="沒有要上傳的影片")
             return
         try:
-            yt = self._yt or youtube.get_service(interactive=True)
-            self._yt = yt
+            if not self._yt:
+                self._say("需要登入 YouTube，請在跳出的瀏覽器頁面登入…")
+                self._yt = youtube.get_service(interactive=True)
+                self._emit("channel", name=youtube.channel_title(self._yt))
+            yt = self._yt
             playlist_id = youtube.find_or_create_playlist(yt, s.playlist) if s.playlist else None
         except Exception as e:  # noqa: BLE001
             log.exception("setup failed")

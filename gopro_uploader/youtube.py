@@ -52,6 +52,11 @@ def _token_path():
     return config.path("token.json")
 
 
+def has_saved_login() -> bool:
+    """A token is stored (it may still be expired: projects in "testing" lose it after 7 days)."""
+    return os.path.exists(_token_path())
+
+
 def sign_out():
     if os.path.exists(_token_path()):
         os.remove(_token_path())
