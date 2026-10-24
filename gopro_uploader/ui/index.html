@@ -68,7 +68,8 @@ td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: auto; background: var(--panel); }
 #preview { background: #000; flex: none; }
 #preview:empty { display: none; }
-#preview video { display: block; width: 100%; max-height: 46vh; background: #000; }
+/* big enough to recognise the scene, small enough to keep the fields in view */
+#preview video { display: block; width: auto; max-width: 100%; height: 26vh; margin: 0 auto; background: #000; }
 #nav { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
 #nav:empty { display: none; }
 #nav .where { flex: 1; text-align: center; line-height: 1.3; }
