@@ -354,7 +354,8 @@ function render() {
         return `<input value="${esc(it.title)}" class="${it.title_locked ? "locked" : ""} ${warn ? "mismatch" : ""}"
           title="${onYT ? "已上傳或上傳中；要改請到 YouTube Studio" : warn ? `⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同` : it.title_locked ? "已手動修改；清空可恢復自動標題" : "自動產生，可直接修改"}"
           ${onYT ? "disabled" : ""}>`;
-      })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</span></td>
+      })()}${["uploaded", "partial"].includes(it.status) && !it.yt
+        ? '<span class="tag suspect" title="還沒跟 YouTube 同步（沒有登入或連不上），這裡顯示的是上傳時的本機紀錄，不一定是 YouTube 上現在的標題。登入後重新掃描就會更新。">⚠ 未同步</span>' : ""}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}</span></td>
       <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了；預設不上傳，請在右側填入正確時間">⚠ 時間可疑</span>'
         : `<span class="tag ${it.time_source === "gps" ? "gps" : it.time_source === "manual" ? "manual" : ""}">${TSRC[it.time_source] || it.time_source}</span>`}</td>
       <td>${fmtDur(it.duration)}</td>
