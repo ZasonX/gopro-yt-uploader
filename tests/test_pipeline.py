@@ -344,6 +344,13 @@ def test_uploaded_rows_show_youtube_data_and_deleted_videos_can_be_reuploaded(tm
     assert b["status"] == "missing" and b["yt"] == [{"id": "gone", "missing": True}]
     assert not api._locked(b["id"])  # can be edited and ticked again
 
+    # restart with an expired sign-in: the copy read from YouTube was saved, so it is still shown
+    offline = Api("unused.log")
+    items = {i["files"][0]: i for i in offline.scan(str(tmp_path))["items"]}
+    a = items["GX010797.MP4"]
+    assert a["title"] == "2025-04-04 範例車站 東口" and a["yt_checked"]
+    assert items["GX010798.MP4"]["status"] == "missing"
+
 
 def test_not_signed_in_keeps_the_local_view(tmp_path):
     from gopro_uploader.app import Api

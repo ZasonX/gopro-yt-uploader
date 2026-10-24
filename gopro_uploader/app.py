@@ -40,8 +40,6 @@ class Api:
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_id: str | None = None
-        self._yt_info: dict[str, dict] = {}   # video id -> what YouTube has now
-        self._yt_checked: set[str] = set()     # ids we asked about (absent from _yt_info = deleted)
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -70,14 +68,20 @@ class Api:
 
     # ------------------------------------------------- YouTube's current data
     def _attach_youtube(self, it):
-        """Uploaded rows show what YouTube has now (titles edited in Studio, etc.)."""
+        """Uploaded rows show the last copy read from YouTube (titles edited in Studio, etc.).
+
+        That copy is saved in state.json, so it is still shown after a restart when the
+        sign-in has expired or there is no network; yt_checked says when it was read.
+        """
         if it["status"] not in ("uploaded", "partial") or not it.get("video_ids"):
             return
         vids = it["video_ids"]
-        if not all(v in self._yt_checked for v in vids):
-            return  # not looked up yet (e.g. not signed in): keep the local view
-        it["yt"] = [{"id": v, **self._yt_info[v]} if v in self._yt_info else {"id": v, "missing": True}
-                    for v in vids]
+        rec = self._store.lookup(it) or {}
+        saved = rec.get("yt") or {}
+        if not all(v in saved for v in vids):
+            return  # never read from YouTube yet: only the local upload record exists
+        it["yt_checked"] = rec.get("yt_checked")
+        it["yt"] = [{"id": v, **saved[v]} if saved[v] else {"id": v, "missing": True} for v in vids]
         live = [y for y in it["yt"] if not y.get("missing")]
         if not live:
             # deleted on YouTube: let it be ticked and uploaded again
@@ -86,16 +90,21 @@ class Api:
         it["title"] = live[0]["title"]
 
     def _sync_youtube(self):
-        vids = [v for it in self._items if it["status"] in ("uploaded", "partial")
-                for v in it.get("video_ids", [])]
-        if not vids or not self._yt:
+        uploaded = [it for it in self._items if it["status"] in ("uploaded", "partial") and it.get("video_ids")]
+        if not uploaded:
+            return
+        if not self._yt:
+            self._say("沒有登入 YouTube，已上傳的影片先顯示上次從 YouTube 讀到的資料")
             return
         try:
-            self._yt_info.update(youtube.fetch_videos(self._yt, vids))
-            self._yt_checked.update(vids)
-        except Exception as e:  # noqa: BLE001 - offline etc.: keep the local view
+            got = youtube.fetch_videos(self._yt, [v for it in uploaded for v in it["video_ids"]])
+        except Exception as e:  # noqa: BLE001 - offline etc.: keep showing the saved copy
             log.warning("could not read uploaded videos from YouTube: %s", e)
-            self._say("無法從 YouTube 讀取已上傳影片的資料，先顯示本機紀錄", "error")
+            self._say("無法從 YouTube 讀取已上傳影片的資料，先顯示上次讀到的資料", "error")
+            return
+        now = datetime.now().isoformat(timespec="minutes")
+        for it in uploaded:  # None = not on YouTube any more
+            self._store.update(it, yt={v: got.get(v) for v in it["video_ids"]}, yt_checked=now)
 
     def refresh_youtube(self):
         self._sync_youtube()
