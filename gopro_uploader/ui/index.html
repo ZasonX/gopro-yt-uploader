@@ -552,10 +552,7 @@ function renderDetail() {
         <div class="copyrow"><input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? (one.lat != null ? "按下方「查詢地名」，會從座標查出建議地名" : "沒有 GPS，可以用下面的搜尋") : "輸入後套用到全部已選的錄影"}">
           ${one?.place ? `<button class="mini" data-copy="${esc(one.place)}">複製</button>` : ""}</div>
       </label>
-      <label class="f"><span>座標 ${one?.lat != null ? `<span class="hint">${LSRC[one.loc_source] || ""}</span>` : ""}</span>
-        <div class="copyrow"><input readonly value="${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}` : sel.length > 1 ? "—" : "沒有"}">
-          ${one?.lat != null ? `<button class="mini" data-copy="${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}">複製</button>` : ""}</div>
-      </label>
+      <div class="hint">座標：${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}（${LSRC[one.loc_source] || ""}，用來查地名；Studio 不能用座標搜尋）` : sel.length > 1 ? "—" : "沒有"}</div>
       <label class="f"><span title="會同時設定名稱和座標">搜尋地點</span>
         <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱（會同時設定名稱和座標）" style="flex:1"><button id="btnSearch">搜尋</button></div>
       </label>
@@ -632,9 +629,8 @@ function ytBox(it) {
       ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
       ${row("拍攝日期", esc(y.recording_date || "—"))}
       ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>`
-        : `<span class="warn">還沒設定</span>${it.lat != null || it.place ? `<span class="hint">　建議（貼到 Studio 的「影片地點」搜尋）：</span>
-            ${it.place ? `<button class="mini" data-copy="${esc(it.place)}" title="複製地名">${esc(it.place)}</button>` : ""}
-            ${it.lat != null ? `<button class="mini" data-copy="${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}" title="複製座標">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}</button>` : ""}` : ""}`)}
+        : `<span class="warn">還沒設定</span>${it.place ? `<span class="hint">　建議（點一下複製，貼到 Studio 的「影片地點」搜尋）：</span>
+            <button class="mini" data-copy="${esc(it.place)}" title="複製地名">${esc(it.place)}</button>` : ""}`)}
       ${row("標題和說明的語言", LANG[y.title_language] || esc(y.title_language || "—"))}
       ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}
       <div class="ytlinks">
