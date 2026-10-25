@@ -8,6 +8,7 @@ import random
 import shutil
 import time
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -30,6 +31,16 @@ class QuotaExceeded(Exception):
 
 class Cancelled(Exception):
     pass
+
+
+class SignedOut(Exception):
+    """The saved sign-in no longer works (expired after 7 days in "testing", revoked, …)."""
+
+
+def _is_signed_out(e: Exception) -> bool:
+    if isinstance(e, RefreshError):
+        return True
+    return isinstance(e, HttpError) and e.resp.status == 401
 
 
 def client_secret_path() -> str:
@@ -66,11 +77,21 @@ def get_service(interactive: bool = True):
     creds = None
     if os.path.exists(_token_path()):
         creds = Credentials.from_authorized_user_file(_token_path(), SCOPES)
-    if creds and creds.expired and creds.refresh_token:
+    if creds and creds.refresh_token and (creds.expired or not interactive):
+        # Always try a refresh on a silent start: an access token can look valid
+        # for an hour after the refresh token itself has already been revoked.
         try:
             creds.refresh(Request())
-        except Exception:  # noqa: BLE001 - token revoked etc.
+        except RefreshError as e:  # Google says no: expired (7 days in "testing") or revoked
+            log.warning("saved sign-in no longer works: %s", e)
+            if not interactive:
+                raise SignedOut(str(e)) from e
             creds = None
+        except Exception as e:  # noqa: BLE001 - offline etc.: not signed out, just unreachable
+            log.warning("could not refresh the sign-in (offline?): %s", e)
+            if not interactive:
+                return None
+            raise
     if not creds or not creds.valid:
         if not interactive:
             return None
@@ -85,7 +106,7 @@ def get_service(interactive: bool = True):
 
 
 def channel_title(yt) -> str:
-    r = yt.channels().list(part="snippet", mine=True).execute()
+    r = _execute(yt.channels().list(part="snippet", mine=True))
     items = r.get("items", [])
     return items[0]["snippet"]["title"] if items else "(沒有頻道)"
 
@@ -189,7 +210,9 @@ def _upload(yt, path, body, progress, cancel) -> str:
             retry = 0
             if status and progress:
                 progress(status.resumable_progress, status.total_size)
-        except HttpError as e:
+        except (HttpError, RefreshError) as e:
+            if _is_signed_out(e):
+                raise SignedOut(str(e)) from e
             _raise_if_quota(e)
             if e.resp.status not in RETRY_STATUS:
                 raise
@@ -223,6 +246,8 @@ def _raise_if_quota(e: HttpError):
 def _execute(req):
     try:
         return req.execute(num_retries=3)
-    except HttpError as e:
+    except (HttpError, RefreshError) as e:
+        if _is_signed_out(e):
+            raise SignedOut(str(e)) from e
         _raise_if_quota(e)
         raise

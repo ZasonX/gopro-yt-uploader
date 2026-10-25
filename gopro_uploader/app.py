@@ -41,6 +41,7 @@ class Api:
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_id: str | None = None
+        self._told_signed_out = False
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -99,6 +100,9 @@ class Api:
             return
         try:
             got = youtube.fetch_videos(self._yt, [v for it in uploaded for v in it["video_ids"]])
+        except youtube.SignedOut as e:
+            self._signed_out(e)
+            return
         except Exception as e:  # noqa: BLE001 - offline etc.: keep showing the saved copy
             log.warning("could not read uploaded videos from YouTube: %s", e)
             self._say("無法從 YouTube 讀取已上傳影片的資料，先顯示上次讀到的資料", "error")
@@ -111,25 +115,66 @@ class Api:
         self._sync_youtube()
         return self._replan()
 
+    # ------------------------------------------------------- sign-in state
+    _EXPIRED_MSG = ("YouTube 登入已失效，請按右上角「重新登入」。"
+                    "（Google Cloud 專案在「測試中」狀態時，登入每 7 天就會失效）")
+
+    def _signed_out(self, err=None):
+        """Any call found the saved sign-in no longer works: forget it and tell the user once."""
+        if err:
+            log.warning("signed out: %s", err)
+        was = self._yt is not None or not self._told_signed_out
+        self._yt = None
+        youtube.sign_out()  # the saved token is dead; the next sign-in must open the browser
+        if was:
+            self._told_signed_out = True
+            self._say(self._EXPIRED_MSG, "error")
+            self._emit("signed_out")
+
+    def check_login(self):
+        """Called when the window regains focus (at most every few minutes): is the sign-in still good?
+
+        Returns the channel name, or None when signed out / never signed in.
+        """
+        if not self._yt:
+            return None
+        try:
+            return youtube.channel_title(self._yt)
+        except youtube.SignedOut as e:
+            self._signed_out(e)
+        except Exception as e:  # noqa: BLE001 - offline: don't call it signed out
+            log.warning("login check failed: %s", e)
+        return None
+
     # ---------------------------------------------------------- JS-facing
     def init(self):
         yt_ok = False
         try:
             self._yt = youtube.get_service(interactive=False)
             yt_ok = self._yt is not None
+        except youtube.SignedOut:
+            self._expired_at_start = True
         except Exception as e:  # noqa: BLE001
             log.warning("silent sign-in failed: %s", e)
         channel = None
         if yt_ok:
             try:
                 channel = youtube.channel_title(self._yt)
+            except youtube.SignedOut as e:
+                self._yt, yt_ok = None, False
+                log.warning("saved sign-in rejected: %s", e)
+                self._expired_at_start = True
             except Exception as e:  # noqa: BLE001
                 log.warning("channel lookup failed: %s", e)
-        if not yt_ok and youtube.has_saved_login():
-            self._say("YouTube 登入已過期，請按右上角「登入」重新登入。"
-                      "（Google Cloud 專案還在「測試中」時，登入每 7 天就會過期）", "error")
+        expired = getattr(self, "_expired_at_start", False)
+        if not yt_ok and not expired and youtube.has_saved_login():
+            self._say("目前連不上 YouTube（網路？），已上傳影片先顯示上次讀到的資料", "error")
+        if expired:
+            youtube.sign_out()  # dead token: the next sign-in must open the browser
+            self._told_signed_out = True
+            self._say(self._EXPIRED_MSG, "error")
         return {"settings": self._settings.to_dict(), "title_formats": TITLE_FORMATS,
-                "login_expired": not yt_ok and youtube.has_saved_login(),
+                "login_expired": expired,
                 "has_secret": youtube.has_client_secret(), "channel": channel,
                 "ffmpeg": merge.ffmpeg_exe() is not None, "app_dir": config.app_dir(),
                 "log_file": self._log_file}
@@ -143,19 +188,30 @@ class Api:
 
     # ---------------------------------------------------------- playlists
     def _signed_in(self):
+        """A working service, opening the browser sign-in when needed."""
         if not self._yt:
+            self._say("請在跳出的瀏覽器頁面登入 YouTube…")
             self._yt = youtube.get_service(interactive=True)
+            self._told_signed_out = False
             self._emit("channel", name=youtube.channel_title(self._yt))
         return self._yt
 
+    def _with_sign_in(self, fn):
+        """Run fn(yt); if the sign-in turns out to be dead, sign in again and retry once."""
+        try:
+            return fn(self._signed_in())
+        except youtube.SignedOut as e:
+            self._signed_out(e)
+            return fn(self._signed_in())
+
     def list_playlists(self):
-        return youtube.list_playlists(self._signed_in())
+        return self._with_sign_in(youtube.list_playlists)
 
     def create_playlist(self, title: str, privacy: str):
         title = title.strip()
         if not title:
             raise ValueError("請輸入播放清單名稱")
-        p = youtube.create_playlist(self._signed_in(), title, privacy)
+        p = self._with_sign_in(lambda yt: youtube.create_playlist(yt, title, privacy))
         self._say(f"已在 YouTube 建立播放清單「{p['title']}」（{privacy}）")
         return p
 
@@ -314,7 +370,9 @@ class Api:
         return True
 
     def sign_in(self):
+        youtube.sign_out()  # 登入 / 重新登入 / 切換帳號 always go through the browser
         self._yt = youtube.get_service(interactive=True)
+        self._told_signed_out = False
         name = youtube.channel_title(self._yt)
         self._say(f"已登入 YouTube 頻道：{name}")
         return name
@@ -369,9 +427,9 @@ class Api:
             self._emit("done", msg="請先選擇播放清單（上方「播放清單」），或選「不加入播放清單」", level="error")
             return
         try:
-            if not self._yt:
-                self._say("需要登入 YouTube，請在跳出的瀏覽器頁面登入…")
-            yt = self._signed_in()
+            if self._yt:
+                self.check_login()  # a dead sign-in is reported and dropped here…
+            yt = self._signed_in()  # …and the browser sign-in opens before any upload starts
             playlist_id = s.playlist_id or None
         except Exception as e:  # noqa: BLE001
             log.exception("setup failed")
@@ -388,8 +446,19 @@ class Api:
             self._uploading_id = item["id"]
             self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
             try:
-                self._upload_item(yt, item, playlist_id)
+                try:
+                    self._upload_item(yt, item, playlist_id)
+                except youtube.SignedOut as e:
+                    # expired mid-batch: sign in again in the browser, then redo this recording
+                    self._signed_out(e)
+                    self._say("請在跳出的瀏覽器頁面重新登入，登入後會從這一段接著上傳")
+                    yt = self._signed_in()
+                    self._upload_item(yt, item, playlist_id)
                 ok += 1
+            except youtube.SignedOut as e:
+                self._signed_out(e)
+                self._set_status(item, "error", error="YouTube 登入失效")
+                break
             except youtube.QuotaExceeded as e:
                 self._set_status(item, "error", error=f"配額用完：{e}")
                 self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")

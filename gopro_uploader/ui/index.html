@@ -315,6 +315,7 @@ async function call(name, ...args) {
 window.onEvent = ev => {
   if (ev.type === "log") log(ev.msg, ev.level);
   else if (ev.type === "channel") { setChannel(ev.name); log(`已登入 YouTube 頻道：${ev.name}`); }
+  else if (ev.type === "signed_out") setSignedOut();
   else if (ev.type === "scan") busy(`讀取中 ${ev.i} / ${ev.n}：${ev.name}`);
   else if (ev.type === "geocode") busy(`查詢地名 ${ev.i} / ${ev.n}：${ev.place}`);
   else if (ev.type === "item" || ev.type === "progress") {
@@ -761,7 +762,21 @@ function setChannel(name) {
   $("#channel").textContent = name ? name : "尚未登入 YouTube";
   $("#channel").className = name ? "ch" : "hint";
   $("#btnSignIn").textContent = name ? "切換帳號" : "登入";
+  $("#btnSignIn").classList.remove("primary");
 }
+function setSignedOut() {  // a saved sign-in stopped working: make it impossible to miss
+  $("#channel").textContent = "⚠ YouTube 登入已失效";
+  $("#channel").className = "hint warn";
+  $("#btnSignIn").textContent = "重新登入";
+  $("#btnSignIn").classList.add("primary");
+}
+// coming back to the window (e.g. the next day): check the sign-in still works, at most every 5 min
+let lastLoginCheck = Date.now();
+window.addEventListener("focus", async () => {
+  if (uploading || Date.now() - lastLoginCheck < 5 * 60 * 1000 || !$("#channel").classList.contains("ch")) return;
+  lastLoginCheck = Date.now();
+  try { await call("check_login"); } catch {}  // a dead sign-in arrives as a "signed_out" event
+});
 
 // ------------------------------------------------------------------- settings
 function openSettings() {
@@ -796,7 +811,7 @@ window.addEventListener("pywebviewready", async () => {
   S = INIT.settings;
   fillSelect($("#title_format"), Object.keys(INIT.title_formats), Object.values(INIT.title_formats));
   loadSettingsUI(); setChannel(INIT.channel); initMap(); refreshButtons();
-  if (INIT.login_expired) { $("#channel").textContent = "⚠ 登入已過期，請重新登入"; $("#channel").className = "hint warn"; }
+  if (INIT.login_expired) setSignedOut();
   log(`資料與紀錄存放在 ${INIT.app_dir}`);
   if (!INIT.has_secret) log("第一次使用：請先在「設定」匯入 client_secret.json，再按「登入」。");
 });

@@ -461,3 +461,56 @@ def test_export_logs_never_includes_sign_in_secrets(tmp_path):
 def test_open_path_only_opens_known_places(tmp_path):
     from gopro_uploader.app import Api
     assert Api("unused.log").open_path(str(tmp_path)) is False
+
+
+def test_dead_sign_in_is_reported_and_forgotten(tmp_path, monkeypatch):
+    from google.auth.exceptions import RefreshError
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+
+    with open(config.path("token.json"), "w") as f:
+        f.write("{}")
+    api = Api("unused.log")
+    events = []
+    api._emit = lambda kind, **d: events.append((kind, d))
+
+    class Dead:  # a service whose every call fails like an expired refresh token
+        def channels(self):
+            return self
+
+        def list(self, **kw):
+            return self
+
+        def execute(self, num_retries=0):
+            raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    api._yt = Dead()
+    assert api.check_login() is None
+    assert ("signed_out", {}) in events and api._yt is None
+    assert not youtube.has_saved_login()  # dead token removed: next sign-in opens the browser
+    n = len(events)
+    api._signed_out()  # reported once, not on every call
+    assert len(events) == n
+
+
+def test_offline_is_not_signed_out(monkeypatch):
+    import requests
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    api = Api("unused.log")
+    events = []
+    api._emit = lambda kind, **d: events.append((kind, d))
+
+    class Offline:
+        def channels(self):
+            return self
+
+        def list(self, **kw):
+            return self
+
+        def execute(self, num_retries=0):
+            raise requests.ConnectionError("no network")
+
+    api._yt = Offline()
+    assert api.check_login() is None
+    assert api._yt is not None and not any(k == "signed_out" for k, _ in events)
