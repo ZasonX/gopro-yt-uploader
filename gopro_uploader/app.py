@@ -393,8 +393,7 @@ class Api:
                 continue
             self._emit("item", id=item["id"], status="uploading")
             body = youtube.video_body(title, item["description"], s.category_id, s.privacy,
-                                      item["recording_date"], item["lat"], item["lon"],
-                                      item["place"] or None, s.title_language, s.audio_language)
+                                      item["recording_date"], s.title_language, s.audio_language)
 
             def progress(done, total, _idx=idx):
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
@@ -402,14 +401,6 @@ class Api:
 
             vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel)
             item["video_ids"].append(vid)
-            if item["lat"] is not None:
-                try:
-                    if not youtube.set_location(yt, vid, item["recording_date"], item["lat"],
-                                                item["lon"], item["place"] or None):
-                        self._say("⚠ YouTube 沒有保存拍攝地點，請到 Studio 手動設定", "error")
-                except Exception as e:  # noqa: BLE001 - the video itself is uploaded fine
-                    log.exception("set_location failed")
-                    self._say(f"⚠ 設定拍攝地點失敗（影片已上傳）：{e}", "error")
             if playlist_id:
                 youtube.add_to_playlist(yt, playlist_id, vid)
             self._store.append_history(item, vid, title, s.playlist)

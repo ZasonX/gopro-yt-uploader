@@ -109,7 +109,10 @@ def add_to_playlist(yt, playlist_id: str, video_id: str) -> None:
 
 
 def video_body(title, description, category_id, privacy, recording_date,
-               lat=None, lon=None, place=None, title_language=None, audio_language=None) -> dict:
+               title_language=None, audio_language=None) -> dict:
+    """No location: recordingDetails.location / locationDescription are deprecated (2017-06-01)
+    and silently ignored on insert and update (Google: "Won't Fix", issuetracker 268030207;
+    confirmed on real uploads 2026-10). The location is set by hand in Studio."""
     snippet = {"title": title[:100], "description": description[:5000], "categoryId": category_id}
     if title_language:
         snippet["defaultLanguage"] = title_language
@@ -123,10 +126,6 @@ def video_body(title, description, category_id, privacy, recording_date,
         "paidProductPlacementDetails": {"hasPaidProductPlacement": False},  # 無付費宣傳
         "recordingDetails": {"recordingDate": recording_date},
     }
-    if lat is not None and lon is not None:
-        body["recordingDetails"]["location"] = {"latitude": lat, "longitude": lon}
-    if place:
-        body["recordingDetails"]["locationDescription"] = place
     return body
 
 
@@ -151,25 +150,6 @@ def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
                 "audio_language": sn.get("defaultAudioLanguage"),
             }
     return out
-
-
-def set_location(yt, video_id: str, recording_date: str, lat, lon, place) -> bool:
-    """Write the location with videos.update and read it back.
-
-    videos.insert accepted recordingDetails.location/locationDescription but YouTube
-    did not keep them, while a location set in Studio
-    shows up in exactly those fields. So we set it again after the upload.
-    update replaces the whole part, hence recordingDate is sent too.
-    """
-    details = {"recordingDate": recording_date,
-               "location": {"latitude": lat, "longitude": lon}}
-    if place:
-        details["locationDescription"] = place
-    _execute(yt.videos().update(part="recordingDetails",
-                                body={"id": video_id, "recordingDetails": details}))
-    r = _execute(yt.videos().list(id=video_id, part="recordingDetails"))
-    got = (r.get("items") or [{}])[0].get("recordingDetails", {})
-    return "location" in got
 
 
 def upload(yt, path: str, body: dict, progress=None, cancel=None) -> str:

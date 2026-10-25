@@ -103,6 +103,9 @@ a.btnlink:hover { filter: brightness(1.1); }
 .grp.yt .warn, .st.missing { color: var(--accent); }
 .detail .row2 { display: flex; gap: 6px; }
 .detail .row2 > * { flex: 1; }
+.copyrow { display: flex; gap: 6px; align-items: center; }
+.copyrow input { flex: 1; min-width: 0; }
+.copyrow button.mini { margin-left: 0; }
 .results { display: flex; flex-direction: column; gap: 2px; }
 .results button { text-align: left; border: none; padding: 4px 6px; }
 .results small { color: var(--muted); display: block; }
@@ -514,6 +517,7 @@ function renderDetail() {
         : `<div class="hint">已上傳，但還沒從 YouTube 讀過這支影片的資料。登入 YouTube 後重新掃描，這裡就會顯示 YouTube 上的標題、地點等資料（之後會存起來，沒登入也看得到）。</div>
            ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
              <a class="btnlink" href="https://studio.youtube.com/video/${esc(v)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a></div>`).join("")}`}`;
+    wireCopy(d);
     return;
   }
   // which groups of fields the user has changed (on any of the selected recordings)
@@ -542,11 +546,16 @@ function renderDetail() {
         </select>
       </label>
     </section>
-    <section class="grp">${head("place", "拍攝地點（上傳到 YouTube 的地點資訊）")}
+    <section class="grp">${head("place", "拍攝地點（給 YouTube Studio 參考）")}
+      <div class="hint">YouTube 不接受用程式設定地點，上傳時不會送出。上傳後到 Studio 的「影片地點」貼上搜尋並選擇。</div>
       <label class="f"><span>地點名稱</span>
-        <input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? "例如：範例車站" : "輸入後套用到全部已選的錄影"}">
+        <div class="copyrow"><input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? (one.lat != null ? "按下方「查詢地名」，會從座標查出建議地名" : "沒有 GPS，可以用下面的搜尋") : "輸入後套用到全部已選的錄影"}">
+          ${one?.place ? `<button class="mini" data-copy="${esc(one.place)}">複製</button>` : ""}</div>
       </label>
-      <div class="hint">座標：${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}（${LSRC[one.loc_source] || ""}）` : sel.length > 1 ? "—" : "沒有"}</div>
+      <label class="f"><span>座標 ${one?.lat != null ? `<span class="hint">${LSRC[one.loc_source] || ""}</span>` : ""}</span>
+        <div class="copyrow"><input readonly value="${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}` : sel.length > 1 ? "—" : "沒有"}">
+          ${one?.lat != null ? `<button class="mini" data-copy="${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}">複製</button>` : ""}</div>
+      </label>
       <label class="f"><span title="會同時設定名稱和座標">搜尋地點</span>
         <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱（會同時設定名稱和座標）" style="flex:1"><button id="btnSearch">搜尋</button></div>
       </label>
@@ -587,6 +596,7 @@ function renderDetail() {
     if (confirm(`要還原${one ? "這段錄影" : ` ${sel.length} 段錄影`}的標題、時間、時區、地點，全部回到自動判斷的值嗎？`))
       setPlan(await call("reset_edits", ids));
   };
+  wireCopy(d);
   d.querySelectorAll("[data-recent]").forEach(b => b.onclick = () => {
     const p = S.recent_places[+b.dataset.recent]; applyLocation(p.lat, p.lon, p.place);
   });
@@ -603,6 +613,14 @@ function renderDetail() {
   $("#btnSearch").onclick = doSearch;
   $("#searchQ").onkeydown = e => { if (e.key === "Enter") doSearch(); };
 }
+function wireCopy(root) {
+  root.querySelectorAll("[data-copy]").forEach(b => b.onclick = async e => {
+    e.preventDefault();
+    try { await navigator.clipboard.writeText(b.dataset.copy); }
+    catch { const t = document.createElement("textarea"); t.value = b.dataset.copy; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+    const old = b.textContent; b.textContent = "已複製 ✓"; setTimeout(() => (b.textContent = old), 1500);
+  });
+}
 function ytBox(it) {
   const row = (k, v) => `<div><span class="hint">${k}</span><span>${v}</span></div>`;
   const when = it.yt_checked ? it.yt_checked.replace("T", " ") : "";
@@ -613,7 +631,10 @@ function ytBox(it) {
       ${row("說明", y.description ? `<span class="desc">${esc(y.description)}</span>` : '<span class="hint">（空白）</span>')}
       ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
       ${row("拍攝日期", esc(y.recording_date || "—"))}
-      ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>` : '<span class="warn">沒有</span>')}
+      ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>`
+        : `<span class="warn">還沒設定</span>${it.lat != null || it.place ? `<span class="hint">　建議（貼到 Studio 的「影片地點」搜尋）：</span>
+            ${it.place ? `<button class="mini" data-copy="${esc(it.place)}" title="複製地名">${esc(it.place)}</button>` : ""}
+            ${it.lat != null ? `<button class="mini" data-copy="${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}" title="複製座標">${it.lat.toFixed(5)}, ${it.lon.toFixed(5)}</button>` : ""}` : ""}`)}
       ${row("標題和說明的語言", LANG[y.title_language] || esc(y.title_language || "—"))}
       ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}
       <div class="ytlinks">

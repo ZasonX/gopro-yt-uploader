@@ -264,40 +264,12 @@ def test_video_body_sends_languages():
     assert config.Settings().title_language == config.Settings().audio_language == "zh-TW"
 
 
-def test_set_location_updates_then_reads_back():
+def test_upload_body_sends_no_location():
+    # YouTube ignores API-written locations (deprecated 2017, "Won't Fix"); the user sets it in Studio
     from gopro_uploader import youtube
-
-    class Req:
-        def __init__(self, result):
-            self.result = result
-
-        def execute(self, num_retries=0):
-            return self.result
-
-    class Videos:
-        def __init__(self):
-            self.sent = None
-
-        def update(self, part, body):
-            self.sent = (part, body)
-            return Req(body)
-
-        def list(self, id, part):
-            return Req({"items": [{"recordingDetails": self.sent[1]["recordingDetails"]}]})
-
-    class YT:
-        v = Videos()
-
-        def videos(self):
-            return self.v
-
-    yt = YT()
-    assert youtube.set_location(yt, "vid", "2025-04-04T00:00:00Z", 12.3456, 22.6543, "車站大廳")
-    part, body = yt.v.sent
-    assert part == "recordingDetails" and body["id"] == "vid"
-    assert body["recordingDetails"] == {"recordingDate": "2025-04-04T00:00:00Z",
-                                        "location": {"latitude": 12.3456, "longitude": 22.6543},
-                                        "locationDescription": "車站大廳"}
+    b = youtube.video_body("t", "d", "19", "unlisted", "2025-04-04T00:00:00Z")
+    assert b["recordingDetails"] == {"recordingDate": "2025-04-04T00:00:00Z"}
+    assert not hasattr(youtube, "set_location")
 
 
 def test_uploaded_recordings_cannot_be_edited(tmp_path):
