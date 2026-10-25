@@ -137,11 +137,34 @@ class Api:
         for k, v in values.items():
             if k in Settings.__dataclass_fields__:
                 setattr(self._settings, k, v)
-        pl = self._settings.playlist
-        if pl and pl not in self._settings.recent_playlists:
-            self._settings.recent_playlists = ([pl] + self._settings.recent_playlists)[:10]
         self._settings.save()
         return {**self._replan(), "settings": self._settings.to_dict()}
+
+    # ---------------------------------------------------------- playlists
+    def _signed_in(self):
+        if not self._yt:
+            self._yt = youtube.get_service(interactive=True)
+            self._emit("channel", name=youtube.channel_title(self._yt))
+        return self._yt
+
+    def list_playlists(self):
+        return youtube.list_playlists(self._signed_in())
+
+    def create_playlist(self, title: str, privacy: str):
+        title = title.strip()
+        if not title:
+            raise ValueError("請輸入播放清單名稱")
+        p = youtube.create_playlist(self._signed_in(), title, privacy)
+        self._say(f"已在 YouTube 建立播放清單「{p['title']}」（{privacy}）")
+        return p
+
+    def choose_playlist(self, playlist_id: str | None, title: str | None):
+        """None = upload without adding to any playlist."""
+        s = self._settings
+        s.playlist_id, s.playlist, s.no_playlist = playlist_id or "", title or "", not playlist_id
+        s.save()
+        self._say(f"上傳後加入播放清單：{title}" if playlist_id else "上傳後不加入任何播放清單")
+        return s.to_dict()
 
     def pick_folder(self):
         r = self._window.create_file_dialog(webview.FileDialog.FOLDER,
@@ -328,13 +351,14 @@ class Api:
         if not todo:
             self._emit("done", msg="沒有要上傳的影片")
             return
+        if not s.playlist_id and not s.no_playlist:
+            self._emit("done", msg="請先選擇播放清單（上方「播放清單」），或選「不加入播放清單」", level="error")
+            return
         try:
             if not self._yt:
                 self._say("需要登入 YouTube，請在跳出的瀏覽器頁面登入…")
-                self._yt = youtube.get_service(interactive=True)
-                self._emit("channel", name=youtube.channel_title(self._yt))
-            yt = self._yt
-            playlist_id = youtube.find_or_create_playlist(yt, s.playlist) if s.playlist else None
+            yt = self._signed_in()
+            playlist_id = s.playlist_id or None
         except Exception as e:  # noqa: BLE001
             log.exception("setup failed")
             self._emit("done", msg=f"無法開始上傳：{e}", level="error")

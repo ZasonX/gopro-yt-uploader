@@ -90,16 +90,27 @@ def channel_title(yt) -> str:
     return items[0]["snippet"]["title"] if items else "(沒有頻道)"
 
 
-def find_or_create_playlist(yt, title: str, privacy: str = "unlisted") -> str:
-    req = yt.playlists().list(part="snippet", mine=True, maxResults=50)
+def list_playlists(yt) -> list[dict]:
+    """The channel's playlists, newest first (1 quota unit per 50)."""
+    out = []
+    req = yt.playlists().list(part="snippet,status,contentDetails", mine=True, maxResults=50)
     while req is not None:
         resp = _execute(req)
         for p in resp.get("items", []):
-            if p["snippet"]["title"] == title:
-                return p["id"]
+            out.append({"id": p["id"], "title": p["snippet"]["title"],
+                        "count": p.get("contentDetails", {}).get("itemCount", 0),
+                        "privacy": p.get("status", {}).get("privacyStatus"),
+                        "published": p["snippet"].get("publishedAt", "")})
         req = yt.playlists().list_next(req, resp)
+    return sorted(out, key=lambda p: p["published"], reverse=True)
+
+
+def create_playlist(yt, title: str, privacy: str = "unlisted") -> dict:
     body = {"snippet": {"title": title}, "status": {"privacyStatus": privacy}}
-    return _execute(yt.playlists().insert(part="snippet,status", body=body))["id"]
+    p = _execute(yt.playlists().insert(part="snippet,status", body=body))
+    return {"id": p["id"], "title": p["snippet"]["title"], "count": 0,
+            "privacy": p.get("status", {}).get("privacyStatus", privacy),
+            "published": p["snippet"].get("publishedAt", "")}
 
 
 def add_to_playlist(yt, playlist_id: str, video_id: str) -> None:

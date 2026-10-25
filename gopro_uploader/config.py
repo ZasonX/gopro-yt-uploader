@@ -30,7 +30,11 @@ TITLE_FORMATS = {
 
 @dataclass
 class Settings:
-    playlist: str = "2025 日本"
+    # the YouTube playlist uploads go into: picked from the channel (or created) in the app.
+    # Empty id = not chosen yet; uploads never create a playlist from a typed name.
+    playlist: str = ""          # title, for display and upload_history.csv
+    playlist_id: str = ""
+    no_playlist: bool = False   # user chose "不加入播放清單"
     # fallback zone when a recording's own zone can't be read from its file times
     trip_tz: str = "Asia/Tokyo"
     # titles in this zone get no zone label; others get one (e.g. "JST")
@@ -48,7 +52,6 @@ class Settings:
     delete_merged: bool = True
     geocode_lang: str = "zh-TW,ja"
     last_folder: str = ""
-    recent_playlists: list[str] = field(default_factory=list)
     # [{"place", "lat", "lon"}], newest first: quick picks under the place search
     recent_places: list[dict] = field(default_factory=list)
 

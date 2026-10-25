@@ -374,3 +374,62 @@ def test_changing_the_time_updates_a_typed_title_instead_of_warning(tmp_path):
     assert api._items[0]["title_date_mismatch"]
     it = api.fix_title_dates([key])["items"][0]
     assert it["title"] == "2025-04-04 走到出口"
+
+
+class _FakePlaylists:
+    """Minimal stand-in for yt.playlists(): one page, insert echoes back."""
+
+    def __init__(self, items):
+        self.items, self.inserted = items, []
+
+    def list(self, **kw):
+        return _Req({"items": self.items})
+
+    def list_next(self, req, resp):
+        return None
+
+    def insert(self, part, body):
+        self.inserted.append(body)
+        return _Req({"id": "PLnew", "snippet": {"title": body["snippet"]["title"], "publishedAt": "2025-04-25T00:00:00Z"},
+                     "status": body["status"]})
+
+
+class _Req:
+    def __init__(self, result):
+        self.result = result
+
+    def execute(self, num_retries=0):
+        return self.result
+
+
+def test_playlists_are_listed_newest_first_and_created_explicitly():
+    from gopro_uploader import youtube
+    pl = _FakePlaylists([
+        {"id": "PL22", "snippet": {"title": "2022 日本", "publishedAt": "2022-05-01T00:00:00Z"},
+         "status": {"privacyStatus": "unlisted"}, "contentDetails": {"itemCount": 40}},
+        {"id": "PL25", "snippet": {"title": "2025 日本", "publishedAt": "2025-04-20T00:00:00Z"},
+         "status": {"privacyStatus": "unlisted"}, "contentDetails": {"itemCount": 2}},
+    ])
+    yt = type("YT", (), {"playlists": lambda self: pl})()
+    got = youtube.list_playlists(yt)
+    assert [(p["title"], p["count"]) for p in got] == [("2025 日本", 2), ("2022 日本", 40)]
+    p = youtube.create_playlist(yt, "2026 韓國", "private")
+    assert p["id"] == "PLnew" and pl.inserted[0]["status"]["privacyStatus"] == "private"
+    assert not hasattr(youtube, "find_or_create_playlist")  # no silent creation from a typed name
+
+
+def test_upload_needs_a_chosen_playlist(tmp_path):
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    events = []
+    api._emit = lambda kind, **d: events.append((kind, d))
+    key = api.scan(str(tmp_path))["items"][0]["id"]
+    api.edit([key], {"include": True})
+    api._upload_all()  # nothing chosen: stops before signing in or uploading
+    assert events[-1][0] == "done" and "播放清單" in events[-1][1]["msg"]
+
+    s = api.choose_playlist("PL25", "2025 日本")
+    assert s["playlist_id"] == "PL25" and not s["no_playlist"]
+    s = api.choose_playlist(None, None)
+    assert s["no_playlist"] and config.Settings.load().no_playlist

@@ -135,6 +135,13 @@ dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 dialog .full { grid-column: 1 / -1; }
 dialog h2 { margin: 0 0 12px; font-size: 16px; }
 dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.plbtn { min-width: 150px; max-width: 240px; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.plbtn.unset { border-color: var(--accent); color: var(--accent); }
+.pllist { display: flex; flex-direction: column; gap: 4px; max-height: 45vh; overflow: auto; }
+.pllist button.pl { text-align: left; display: flex; justify-content: space-between; gap: 12px; }
+.pllist button.pl small { color: var(--muted); white-space: nowrap; }
+.pllist button.pl.on { border-color: var(--accent2); background: var(--sel); }
+.plnew { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .check { display: flex; gap: 6px; align-items: center; }
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; place-items: center; z-index: 9999; }
 .overlay.on { display: grid; }
@@ -150,9 +157,8 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       <button id="btnScan" disabled>重新掃描</button>
     </div>
   </label>
-  <label class="f">播放清單
-    <input id="playlist" list="playlists" style="width:150px">
-    <datalist id="playlists"></datalist>
+  <label class="f">播放清單（上傳後加入）
+    <button id="btnPlaylist" class="plbtn" title="從你頻道的播放清單選擇，或建立新的"></button>
   </label>
   <label class="f" title="每段錄影會從檔案自動判斷拍攝時的時區；判斷不出來時才用這個">預設時區
     <select id="trip_tz"></select>
@@ -200,6 +206,30 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   </div>
   <div id="log"></div>
 </footer>
+
+<dialog id="dlgPlaylist">
+  <h2>選擇播放清單</h2>
+  <div class="hint">上傳完成的影片會加入這個播放清單。清單是從你的 YouTube 頻道讀取的。</div>
+  <input id="plSearch" placeholder="搜尋播放清單名稱" style="width:100%;margin:10px 0 6px">
+  <div id="plList" class="pllist"></div>
+  <div class="plnew">
+    <b>或建立新的播放清單</b>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <input id="plNewName" placeholder="名稱，例如：2025 日本" style="flex:1">
+      <select id="plNewPrivacy">
+        <option value="unlisted">非公開</option>
+        <option value="private">私人</option>
+        <option value="public">公開</option>
+      </select>
+      <button id="plCreate">建立並選擇</button>
+    </div>
+  </div>
+  <div class="btns">
+    <button id="plNone" title="上傳時不加入任何播放清單">不加入播放清單</button>
+    <span style="flex:1"></span>
+    <button id="plClose">關閉</button>
+  </div>
+</dialog>
 
 <dialog id="dlgSettings">
   <h2>設定</h2>
@@ -649,8 +679,9 @@ function fillSelect(sel, values, labels) {
 }
 function loadSettingsUI() {
   $("#folder").value = S.last_folder || "";
-  $("#playlist").value = S.playlist;
-  $("#playlists").innerHTML = (S.recent_playlists || []).map(p => `<option value="${esc(p)}">`).join("");
+  const pb = $("#btnPlaylist");
+  pb.textContent = S.playlist_id ? `${S.playlist} ▾` : S.no_playlist ? "不加入播放清單 ▾" : "⚠ 請選擇 ▾";
+  pb.classList.toggle("unset", !S.playlist_id && !S.no_playlist);
   $("#trip_tz").value = S.trip_tz;
   $("#title_format").value = S.title_format;
 }
@@ -658,7 +689,43 @@ async function saveSettings(values) {
   const res = await call("save_settings", values);
   S = res.settings; loadSettingsUI(); if (items.length) setPlan(res);
 }
-$("#playlist").addEventListener("change", e => saveSettings({ playlist: e.target.value.trim() }));
+// ------------------------------------------------------------------ playlists
+let playlists = [];
+function renderPlaylists() {
+  const q = $("#plSearch").value.trim().toLowerCase();
+  const shown = playlists.filter(p => !q || p.title.toLowerCase().includes(q));
+  $("#plList").innerHTML = shown.map(p => `
+    <button class="pl ${p.id === S.playlist_id ? "on" : ""}" data-id="${esc(p.id)}">
+      <b>${esc(p.title)}</b><small>${p.count} 部影片 · ${PRIVACY[p.privacy] || esc(p.privacy || "")}</small></button>`).join("")
+    || `<div class="hint">${playlists.length ? "沒有符合的播放清單" : "這個頻道還沒有播放清單"}</div>`;
+  $("#plList").querySelectorAll("button.pl").forEach(b => b.onclick = () => {
+    const p = playlists.find(x => x.id === b.dataset.id); choosePlaylist(p.id, p.title);
+  });
+  // offer to create what was typed in the search box, until the name field is edited by hand
+  if (!$("#plNewName").dataset.typed) $("#plNewName").value = $("#plSearch").value.trim();
+}
+async function choosePlaylist(id, title) {
+  S = await call("choose_playlist", id, title); loadSettingsUI(); $("#dlgPlaylist").close();
+}
+$("#btnPlaylist").onclick = async () => {
+  $("#plSearch").value = ""; $("#plNewName").value = ""; delete $("#plNewName").dataset.typed;
+  $("#plList").innerHTML = '<div class="hint">從 YouTube 讀取播放清單中…（沒登入的話會先請你登入）</div>';
+  $("#dlgPlaylist").showModal(); $("#plSearch").focus();
+  try { playlists = await call("list_playlists"); renderPlaylists(); }
+  catch { $("#plList").innerHTML = '<div class="hint warn">讀不到播放清單，請確認已登入 YouTube。</div>'; }
+};
+$("#plSearch").oninput = renderPlaylists;
+$("#plNewName").oninput = e => { e.target.dataset.typed = "1"; };
+$("#plNone").onclick = () => choosePlaylist(null, null);
+$("#plClose").onclick = () => $("#dlgPlaylist").close();
+$("#plCreate").onclick = async () => {
+  const name = $("#plNewName").value.trim(), privacy = $("#plNewPrivacy").value;
+  if (!name) { $("#plNewName").focus(); return; }
+  if (playlists.some(p => p.title === name) && !confirm(`已經有叫「${name}」的播放清單了，還是要再建一個同名的嗎？`)) return;
+  if (!confirm(`要在你的 YouTube 頻道建立播放清單「${name}」（${PRIVACY[privacy]}）嗎？`)) return;
+  const p = await call("create_playlist", name, privacy);
+  playlists.unshift(p); choosePlaylist(p.id, p.title);
+};
 $("#trip_tz").addEventListener("change", e => saveSettings({ trip_tz: e.target.value }));
 $("#title_format").addEventListener("change", e => saveSettings({ title_format: e.target.value }));
 
@@ -674,7 +741,9 @@ $("#btnUpload").onclick = async () => {
   const list = items.filter(i => i.include && i.status !== "uploaded"), n = list.length;
   const names = list.slice(0, 10).map(i => `・${i.title}（${i.files.join(" + ")}）`).join("\n")
     + (n > 10 ? `\n…還有 ${n - 10} 段` : "");
-  if (!confirm(`要上傳下面這 ${n} 段錄影到播放清單「${S.playlist}」嗎？\n\n${names}`)) return;
+  if (!S.playlist_id && !S.no_playlist) { alert("請先在上方「播放清單」選擇要加入的播放清單（或選「不加入播放清單」）。"); $("#btnPlaylist").click(); return; }
+  const where = S.playlist_id ? `，並加入播放清單「${S.playlist}」` : "（不加入播放清單）";
+  if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？\n\n${names}`)) return;
   upTotal = n; upDone = 0;
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
