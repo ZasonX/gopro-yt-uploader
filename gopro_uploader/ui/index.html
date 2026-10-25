@@ -200,6 +200,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <span class="summary" id="summary"></span>
     <span id="offset" class="hint"></span>
     <span class="spacer"></span>
+    <button class="btnExport" title="把最近的執行紀錄和設定打包成 zip（不含登入憑證），回報問題時用">匯出紀錄</button>
     <button id="btnGeocode" disabled>查詢地名</button>
     <button id="btnCancel" disabled>停止</button>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
@@ -270,6 +271,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       <button data-open="data">開啟資料夾</button>
       <button data-open="history">上傳紀錄 (CSV)</button>
       <button data-open="log">本次執行紀錄</button>
+      <button class="btnExport" title="把最近的執行紀錄和設定打包成 zip（不含登入憑證），回報問題時用">匯出紀錄（zip）</button>
       <button id="btnSignOut">登出 YouTube</button>
     </div>
   </div>
@@ -781,6 +783,7 @@ $("#btnSaveSettings").onclick = async () => {
 $("#btnSecret").onclick = async () => { if (await call("pick_client_secret")) { INIT.has_secret = true; $("#secretState").textContent = "✓ 已設定"; } };
 $("#btnSignOut").onclick = async () => { await call("sign_out"); setChannel(null); };
 document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => call("open_path", b.dataset.open));
+document.querySelectorAll(".btnExport").forEach(b => b.onclick = () => call("export_logs"));
 
 // ----------------------------------------------------------------------- boot
 let INIT;

@@ -81,6 +81,37 @@ class Store:
                         f"https://youtu.be/{video_id}"])
 
 
+EXPORT_FILES = ("settings.json", "state.json", "edits.json", "upload_history.csv")
+NEVER_EXPORT = ("token", "client_secret")  # sign-in secrets stay on this PC
+
+
+def export_logs(dest: str, max_logs: int = 10) -> list[str]:
+    """Zip the newest run logs plus the app's non-secret state into dest, for a bug report.
+
+    Returns the names put in the zip. OAuth tokens and client_secret are never included.
+    """
+    import zipfile
+    base = config.app_dir()
+    logs_dir = os.path.join(base, "logs")
+    logs = sorted((f for f in os.listdir(logs_dir) if f.endswith(".log")), reverse=True)[:max_logs] \
+        if os.path.isdir(logs_dir) else []
+    names = []
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in logs:
+            z.write(os.path.join(logs_dir, f), f"logs/{f}")
+            names.append(f"logs/{f}")
+        for f in EXPORT_FILES:
+            p = os.path.join(base, f)
+            if os.path.exists(p) and not f.startswith(NEVER_EXPORT):
+                z.write(p, f)
+                names.append(f)
+        z.writestr("README.txt", "GoPro → YouTube 上傳工具的紀錄匯出。\n"
+                   "包含最近的執行紀錄、設定、上傳狀態、使用者修改、上傳紀錄 CSV。\n"
+                   "不包含登入憑證（token / client_secret）。\n"
+                   "注意：內容含有影片檔名、標題、地點和 YouTube 影片 ID，分享前請確認。\n")
+    return names
+
+
 def setup_logging() -> str:
     log_file = config.path("logs", datetime.now().strftime("%Y%m%d-%H%M%S.log"))
     # file for the record, stderr so a terminal launch shows scan/upload progress

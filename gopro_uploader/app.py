@@ -15,6 +15,7 @@ from .config import TITLE_FORMATS, Settings
 from .planner import build_plan, detect_camera_offset, retime_title
 from .scanner import scan
 from .store import Edits, Store, fingerprint, setup_logging
+from .store import export_logs as store_export_logs
 
 log = logging.getLogger("app")
 
@@ -323,10 +324,23 @@ class Api:
         self._yt = None
         return True
 
+    def export_logs(self):
+        name = f"GoProYTUploader-紀錄-{datetime.now():%Y%m%d-%H%M}.zip"
+        r = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name,
+                                            file_types=("Zip 壓縮檔 (*.zip)",))
+        if not r:
+            return None
+        dest = r if isinstance(r, str) else r[0]
+        if not dest.lower().endswith(".zip"):
+            dest += ".zip"
+        files = store_export_logs(dest)
+        self._say(f"已匯出紀錄（{len(files)} 個檔案，不含登入憑證）：{dest}")
+        return dest
+
     def open_path(self, which: str):
         target = {"data": config.app_dir(), "log": self._log_file,
-                  "history": config.path("upload_history.csv")}.get(which, which)
-        if os.path.exists(target):
+                  "history": config.path("upload_history.csv")}.get(which)
+        if target and os.path.exists(target):
             os.startfile(target)  # noqa: S606 - Windows only, user-initiated
             return True
         return False

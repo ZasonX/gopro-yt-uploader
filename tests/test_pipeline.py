@@ -433,3 +433,31 @@ def test_upload_needs_a_chosen_playlist(tmp_path):
     assert s["playlist_id"] == "PL25" and not s["no_playlist"]
     s = api.choose_playlist(None, None)
     assert s["no_playlist"] and config.Settings.load().no_playlist
+
+
+def test_export_logs_never_includes_sign_in_secrets(tmp_path):
+    import zipfile
+    from gopro_uploader import store
+    for name, body in [("token.json", "SECRET-TOKEN"), ("client_secret.json", "SECRET-CLIENT"),
+                       ("settings.json", "{}"), ("state.json", "{}"), ("upload_history.csv", "a,b")]:
+        with open(config.path(name), "w", encoding="utf-8") as f:
+            f.write(body)
+    for n in range(12):
+        with open(config.path("logs", f"20250425-1200{n:02d}.log"), "w", encoding="utf-8") as f:
+            f.write(f"log {n}")
+    dest = tmp_path / "export.zip"
+    names = store.export_logs(str(dest))
+    with zipfile.ZipFile(dest) as z:
+        listed = z.namelist()
+        blob = b"".join(z.read(n) for n in listed)
+    assert set(names) <= set(listed) and "README.txt" in listed
+    assert "settings.json" in listed and "state.json" in listed and "upload_history.csv" in listed
+    assert sum(n.startswith("logs/") for n in listed) == 10  # newest 10 only
+    assert "logs/20250425-120011.log" in listed and "logs/20250425-120000.log" not in listed
+    assert not any("token" in n or "client_secret" in n for n in listed)
+    assert b"SECRET" not in blob
+
+
+def test_open_path_only_opens_known_places(tmp_path):
+    from gopro_uploader.app import Api
+    assert Api("unused.log").open_path(str(tmp_path)) is False
