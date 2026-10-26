@@ -756,7 +756,7 @@ function renderDetail() {
     return;
   }
   // which groups of fields the user has changed (on any of the selected recordings)
-  const GROUPS = { title: ["title"], time: ["local_time", "tz"], place: ["place", "lat", "lon"] };
+  const GROUPS = { title: ["title"], desc: ["description"], time: ["local_time", "tz"], place: ["place", "lat", "lon"] };
   const edited = g => sel.some(i => i.edited.some(k => GROUPS[g].includes(k)));
   const head = (g, label) => `<div class="gh"><b>${label}</b>
     ${edited(g) ? `<span class="badge">已修改</span><button class="mini" data-reset="${g}" title="還原成自動判斷的值">還原</button>` : ""}</div>`;
@@ -772,6 +772,10 @@ function renderDetail() {
       <input id="titleInput" value="${esc(one.title)}">
       ${one.title_date_mismatch ? `<div class="hint warn">⚠ 標題裡的日期跟拍攝時間（${esc(one.local.slice(0, 10))}）不同。
         <button class="mini" id="btnFixDate">只把標題開頭的日期改成 ${esc(one.local.slice(0, 10))}</button></div>` : ""}
+    </section>
+    <section class="grp">${head("desc", "說明（YouTube 的說明欄）")}
+      <textarea id="descInput" rows="3" placeholder="例如：昨晚用 APP 連手機，更新了時區">${esc(one.description)}</textarea>
+      <div class="hint">只能一支一支改。改完點別的地方就會儲存（Enter 是換行）。</div>
     </section>` : ""}
     <section class="grp">${head("time", "拍攝時間")}
       <label class="f"><span>日期${one ? ` <span class="hint">${one.time_suspect ? (one.date_guess ? "推測" : "") : TSRC[one.time_source] || ""}</span>` : ""}</span>
@@ -823,6 +827,18 @@ function renderDetail() {
     el.onblur = () => { if (el.value !== orig) afterPointer(() => fn(el.value.trim())); };
   };
   onCommit($("#titleInput"), v => save({ title: v || null }));
+  // description: multi-line, so Enter is a newline; leaving the box saves.
+  // Saving the automatic text unchanged (or clearing it) means "keep it automatic".
+  const desc = $("#descInput");
+  if (desc) {
+    const orig = desc.value;
+    desc.onkeydown = e => { if (e.key === "Escape") { desc.value = orig; desc.blur(); } };
+    desc.onblur = () => {
+      const v = desc.value.replace(/\s+$/, "");
+      if (v === orig.replace(/\s+$/, "")) return;
+      afterPointer(() => save({ description: v && v !== one.description_auto ? v : null }));
+    };
+  }
   const fix = $("#btnFixDate");
   if (fix) fix.onclick = async () => setPlan(await call("fix_title_dates", ids));
   // date + 24h clock; an empty clock means "date only"
@@ -843,6 +859,7 @@ function renderDetail() {
   $("#tzInput").onchange = e => save({ tz: e.target.value || null });
   d.querySelectorAll("[data-reset]").forEach(b => b.onclick = () => {
     const g = b.dataset.reset;
+    if (g === "desc" && !confirm("會刪掉你寫的說明，恢復成自動產生的內容（檔名等）。確定嗎？")) return;
     if (g === "title" && !confirm(`會刪掉你打的標題，恢復成程式自動產生的標題${one ? `（例如「${one.local.slice(0, 16)}」）` : ""}。確定嗎？`)) return;
     save(Object.fromEntries(GROUPS[g].map(k => [k, null])));
   });

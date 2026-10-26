@@ -260,7 +260,7 @@ class Api:
         self._say(f"找到 {nfiles} 個檔案，共 {len(self._items)} 段錄影")
         return res
 
-    _FIELD_NAMES = {"title": "標題", "local_time": "拍攝時間", "tz": "時區", "place": "地點名稱",
+    _FIELD_NAMES = {"title": "標題", "description": "說明", "local_time": "拍攝時間", "tz": "時區", "place": "地點名稱",
                     "lat": "座標", "include": "上傳勾選"}
 
     def _log_edit(self, item_id: str, fields: dict):

@@ -707,3 +707,25 @@ def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
     assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GOPR0805.JPG'))}"]]
     assert api.reveal_photo(str(tmp_path), "secret.txt") is False
     assert api.open_photo(str(tmp_path), "..\secret.txt") is False
+
+
+def test_tz_override_note_and_own_description(tmp_path):
+    from gopro_uploader.app import Api
+    # arrived abroad with the camera still on home time; the next day the zone changed
+    _gopro_clip(tmp_path / "GX010827.MP4", datetime(2025, 4, 4, 8, 33, 21), 10, 8)
+    _gopro_clip(tmp_path / "GX010888.MP4", datetime(2025, 4, 6, 0, 30), 10, 9)
+    api = Api("unused.log")
+    items = {i["files"][0]: i for i in api.scan(str(tmp_path))["items"]}
+    assert items["GX010827.MP4"]["description"] == "GX010827.MP4"  # nothing overridden yet
+
+    items = {i["files"][0]: i for i in api.edit([items["GX010827.MP4"]["id"]], {"tz": "Asia/Tokyo"})["items"]}
+    a = items["GX010827.MP4"]
+    assert a["title"] == "2025-04-04 17:33 JST"
+    assert a["description"] == "GX010827.MP4\n相機時間為 UTC+8，標題已換算為日本時間（JST）"
+    assert items["GX010888.MP4"]["tz_note"] == ""  # camera already on +9: no note
+
+    b = items["GX010888.MP4"]
+    note = "GX010888.MP4\n昨晚用 APP 連手機，更新了時區"
+    api.edit([b["id"]], {"description": note})
+    again = {i["files"][0]: i for i in Api("unused.log").scan(str(tmp_path))["items"]}
+    assert again["GX010888.MP4"]["description"] == note and "description" in again["GX010888.MP4"]["edited"]

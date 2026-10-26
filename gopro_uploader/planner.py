@@ -127,6 +127,9 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             "local": local.strftime("%Y-%m-%d %H:%M:%S"),
             "tz": getattr(zone, "key", None) or local.strftime("%Z"),
             "tz_source": zsrc,
+            # the camera's own zone was overridden: say so in the description (shown on YouTube)
+            "tz_note": _tz_note(off, local) if zsrc == "manual" and off is not None
+                       and off != local.utcoffset() else "",
             # no label in the home zone (e.g. Taiwan); otherwise "JST" etc.
             "tz_label": "" if local.utcoffset() == local.astimezone(home_tz).utcoffset()
                         else local.strftime("%Z"),
@@ -175,8 +178,11 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
         item["title_locked"] = "title" in ov
         item["title_date_mismatch"] = item["title_locked"] and _date_mismatch(item["title"], local)
         item["edited"] = sorted(k for k in ov if k != "include")  # for "已修改" badges in the UI
-        item["description"] = ov.get("description") or settings.description_template.format(
-            files="\n".join(item["files"]), place=item["place"])
+        auto = settings.description_template.format(files="\n".join(item["files"]), place=item["place"])
+        if item["tz_note"]:
+            auto += "\n" + item["tz_note"]
+        item["description_auto"] = auto
+        item["description"] = ov.get("description") or auto
         # YouTube keeps only the date; send local midnight as UTC so the day never shifts
         item["recording_date"] = local.strftime("%Y-%m-%dT00:00:00Z")
         rec_state = store_lookup(item) if store_lookup else None
@@ -187,6 +193,21 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
 
     _dedupe_titles(items)
     return items
+
+
+_ZONE_NAMES = {"Asia/Tokyo": "日本時間", "Asia/Taipei": "台灣時間", "Asia/Seoul": "韓國時間",
+               "Asia/Hong_Kong": "香港時間", "Asia/Shanghai": "中國時間", "Asia/Singapore": "新加坡時間",
+               "Asia/Bangkok": "泰國時間"}
+
+
+def _tz_note(camera_offset: timedelta, local: datetime) -> str:
+    """'相機時間為 UTC+8，標題已換算為日本時間（JST）'"""
+    h = camera_offset.total_seconds() / 3600
+    utc = f"UTC{h:+g}" if h % 1 == 0 else f"UTC{h:+.2f}"
+    key = getattr(local.tzinfo, "key", "")
+    abbr = local.strftime("%Z")
+    name = _ZONE_NAMES.get(key)
+    return f"相機時間為 {utc}，標題已換算為{name}（{abbr}）" if name else f"相機時間為 {utc}，標題已換算為 {abbr}"
 
 
 def date_part(fmt: str) -> str:
