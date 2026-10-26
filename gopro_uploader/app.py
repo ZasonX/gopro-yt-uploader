@@ -112,6 +112,9 @@ class Api:
             self._store.update(it, yt={v: got.get(v) for v in it["video_ids"]}, yt_checked=now)
 
     def refresh_youtube(self):
+        # re-plan first: self._items may be from mid-upload (an edit re-planned while the
+        # worker uploaded), still saying "uploading" for a video that is now done
+        self._replan()
         self._sync_youtube()
         return self._replan()
 
@@ -476,6 +479,9 @@ class Api:
     def _set_status(self, item, status, **extra):
         item["status"] = status
         self._store.update(item, status=status, video_ids=item.get("video_ids", []), **extra)
+        if status == "uploaded":  # done: drop the user's tick so the row shows as not queued
+            self._overrides.get(item["id"], {}).pop("include", None)
+            item["include"] = False
         self._emit("item", id=item["id"], status=status, video_ids=item.get("video_ids", []),
                    error=extra.get("error"))
 

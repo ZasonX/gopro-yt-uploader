@@ -514,3 +514,35 @@ def test_offline_is_not_signed_out(monkeypatch):
     api._yt = Offline()
     assert api.check_login() is None
     assert api._yt is not None and not any(k == "signed_out" for k, _ in events)
+
+
+def test_refresh_after_upload_reads_youtube_even_if_items_went_stale(tmp_path):
+    # GX010799 uploads; meanwhile GX010800 is edited (re-plan marks 799 "uploading");
+    # the refresh after "done" must still read 799 from YouTube, and 799 is unticked.
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010799.MP4", CAM, 4.0, [])
+    make_mp4(tmp_path / "GX010800.MP4", CAM.replace(minute=50), 4.0, [])
+    api = Api("unused.log")
+    api._emit = lambda *a, **k: None
+    api._yt = object()
+    a, b = api.scan(str(tmp_path))["items"]
+    api.edit([a["id"]], {"include": True})
+    api._uploading_id = a["id"]
+    api.edit([b["id"]], {"title": "往出口移動"})  # re-plan during the upload
+    worker_item = next(i for i in api._items if i["id"] == a["id"])
+    worker_item["video_ids"] = ["VIDEO_ID_02"]
+    api._set_status(worker_item, "uploaded")
+    api._uploading_id = None
+
+    fetch, youtube.fetch_videos = youtube.fetch_videos, lambda yt, ids: {
+        "VIDEO_ID_02": {"title": "2025-04-04 03:16", "description": "", "privacy": "unlisted",
+                        "recording_date": "2025-04-04", "place": "", "lat": None, "lon": None,
+                        "title_language": "zh-TW", "audio_language": "zh-TW"}}
+    try:
+        items = {i["files"][0]: i for i in api.refresh_youtube()["items"]}
+    finally:
+        youtube.fetch_videos = fetch
+    up = items["GX010799.MP4"]
+    assert up["status"] == "uploaded" and up["yt"][0]["id"] == "VIDEO_ID_02"
+    assert up["include"] is False
