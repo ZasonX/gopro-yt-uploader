@@ -46,11 +46,10 @@ tr.row:hover { background: color-mix(in srgb, var(--sel) 50%, transparent); }
 tr.row.sel { background: var(--sel); }
 tr.row.done td { color: var(--muted); }
 td.title { width: 100%; }
-td.title input { border-color: transparent; background: transparent; width: 100%; min-width: 160px; padding: 2px 4px; }
+td.title .t { display: block; min-width: 160px; padding: 2px 4px; white-space: normal; }
 td.title .fn { display: block; padding-left: 5px; font: 11px Consolas, monospace; color: var(--muted); }
 th.inc label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
-td.title input:focus { border-color: var(--accent2); background: var(--panel); }
-td.title input.locked { font-weight: 600; }
+td.title .t.locked { font-weight: 600; }
 td.files { font-family: Consolas, monospace; font-size: 12px; }
 td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
@@ -128,7 +127,7 @@ footer { background: var(--panel); border-top: 1px solid var(--line); }
 #upbar.on { display: flex; }
 #upbar .t { font-weight: 600; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar.big { height: 8px; width: 260px; margin: 0; }
-.title input.mismatch { outline: 2px solid var(--accent); }
+td.title .t.mismatch { color: var(--accent); }
 .actions { display: flex; gap: 10px; align-items: center; padding: 8px 14px; flex-wrap: wrap; }
 .actions .summary { color: var(--muted); }
 .actions .spacer { flex: 1; }
@@ -392,12 +391,10 @@ function render() {
     <tr class="row ${selected.has(it.id) ? "sel" : ""} ${it.status === "uploaded" ? "done" : ""}" data-id="${esc(it.id)}">
       <td><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
       <td class="status">${statusHtml(it)}</td>
-      <td class="title">${(() => {
-        const onYT = ["uploading", "merging", "uploaded", "partial"].includes(it.status);
-        const warn = it.title_date_mismatch && !onYT;
-        return `<input value="${esc(it.title)}" class="${it.title_locked ? "locked" : ""} ${warn ? "mismatch" : ""}"
-          title="${onYT ? "已上傳或上傳中；要改請到 YouTube Studio" : warn ? `⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同` : it.title_locked ? "已手動修改；清空可恢復自動標題" : "自動產生，可直接修改"}"
-          ${onYT ? "disabled" : ""}>`;
+      <td class="title">${(() => {  // display only: titles are edited in the panel on the right
+        const warn = it.title_date_mismatch && !["uploading", "merging", "uploaded", "partial"].includes(it.status);
+        return `<span class="t ${it.title_locked ? "locked" : ""} ${warn ? "mismatch" : ""}"
+          ${warn ? `title="⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同"` : ""}>${esc(it.title)}</span>`;
       })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}${["uploaded", "partial"].includes(it.status) && !it.yt
         ? ' <span class="tag suspect" title="還沒從 YouTube 讀過這支影片的資料，這裡顯示的是上傳當時的標題；在 Studio 改過的話會不一樣。登入 YouTube 後重新掃描就會讀取。">⚠ 上傳時的標題</span>' : ""}</span></td>
       <td>${it.time_suspect && it.date_uncertain ? `<span class="tag suspect" title="相機時鐘重設過；前後錄影的日期不同，先用 ${esc(it.date_guess)}，請確認">⚠ 日期不確定</span>`
@@ -450,7 +447,6 @@ $("#rows").addEventListener("change", async e => {
   const tr = e.target.closest("tr.row"); if (!tr) return;
   const id = tr.dataset.id;
   if (e.target.classList.contains("inc")) setPlan(await call("edit", [id], { include: e.target.checked }));
-  else if (e.target.closest("td.title")) setPlan(await call("edit", [id], { title: e.target.value.trim() || null }));
 });
 // right-click a row: open the original file / show it in Explorer / copy its name
 function closeMenu() { $("#ctxmenu")?.remove(); }
