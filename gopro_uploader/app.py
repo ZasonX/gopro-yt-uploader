@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import webview
 
@@ -367,12 +367,34 @@ class Api:
             return []
         if self._preview is None:
             self._preview = preview.PreviewServer()
-        out = []
-        for name, path in zip(item["files"], item["paths"]):
+        rec = next((r for r in self._recs if r.key == item_id), None)
+        durs = [c.info.duration if c.info else 0 for c in rec.clips] if rec else []
+        out, start = [], 0.0
+        for n, (name, path) in enumerate(zip(item["files"], item["paths"])):
             lrv = preview.lrv_path(path)
-            out.append({"name": name, "lrv": lrv is not None,
+            # "start": seconds into the whole recording where this chapter begins
+            # (a clock seen in chapter 2 at 0:30 is start + 30 s into the recording)
+            out.append({"name": name, "lrv": lrv is not None, "start": start,
                         "url": self._preview.url_for(lrv or path)})
+            start += durs[n] if n < len(durs) else 0
         return out
+
+    def time_from_clock(self, item_id: str, position: float, clock: str):
+        """A clock reading "HH:MM" seen `position` seconds into the recording -> its start time.
+
+        Sets local_time (date from the recording's current / guessed date, minus a day if
+        the start falls before midnight) and returns the new plan.
+        """
+        it = next((i for i in self._items if i["id"] == item_id), None)
+        if not it or self._locked(item_id):
+            return self._replan()
+        hh, mm = (int(x) for x in clock.split(":"))
+        seen = datetime.fromisoformat(it["local"][:10]).replace(hour=hh, minute=mm)
+        start = seen - timedelta(seconds=round(position))
+        start = (start + timedelta(seconds=30)).replace(second=0)  # the clock only shows minutes
+        m, s = divmod(int(position), 60)
+        self._say(f"{' + '.join(it['files'])}：{m}:{s:02d} 看到時鐘 {clock} → 推算開始時間 {start:%H:%M}")
+        return self.edit([item_id], {"local_time": start.strftime("%Y-%m-%dT%H:%M")})
 
     def search_place(self, query: str, lat=None, lon=None):
         near = (lat, lon) if lat is not None and lon is not None else None

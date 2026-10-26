@@ -521,7 +521,29 @@ async function renderPreview() {
       <div class="bar2">
         ${srcs.length > 1 ? srcs.map((x, i) => `<button data-n="${i}" class="${i === n ? "on" : ""}">${i + 1}/${srcs.length}</button>`).join("") : ""}
         <span class="hint">${esc(s.name)} · ${s.lrv ? "低解析度預覽（LRV）" : "原檔，若無法播放代表格式不支援（例如 HEVC）"}</span>
+        <span style="flex:1"></span>
+        <span class="clockfix">
+          <button class="btnClock" title="影片裡拍到時鐘時：先暫停在那一格，按這裡輸入看到的時間，程式會算出這段錄影幾點開始">🕒 我看到時鐘</button>
+        </span>
       </div>`;
+    const cf = box.querySelector(".clockfix");
+    cf.querySelector(".btnClock").onclick = () => {
+      const v = box.querySelector("video"); v.pause();
+      const pos = s.start + v.currentTime, m = Math.floor(pos / 60), sec = Math.floor(pos % 60);
+      cf.innerHTML = `<span class="hint">${m}:${String(sec).padStart(2, "0")} 看到的時間</span>
+        <input class="clockIn" placeholder="15:54" style="width:70px" inputmode="numeric">
+        <button class="clockOk">套用</button><button class="clockNo">取消</button>`;
+      const inp = cf.querySelector(".clockIn"); inp.focus();
+      const apply = async () => {
+        let t = inp.value.trim();
+        if (/^\d{3,4}$/.test(t)) t = t.padStart(4, "0").replace(/(\d\d)(\d\d)/, "$1:$2");
+        if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(t)) { log(`時間「${inp.value}」看不懂，請用 24 小時制，例如 15:54`, "error"); inp.focus(); return; }
+        setPlan(await call("time_from_clock", id, pos, t.padStart(5, "0")));
+      };
+      cf.querySelector(".clockOk").onclick = apply;
+      inp.onkeydown = e => { if (e.key === "Enter" && !e.isComposing) apply(); if (e.key === "Escape") show(n); };
+      cf.querySelector(".clockNo").onclick = () => show(n);
+    };
     box.querySelector("video").onloadedmetadata = () => map.invalidateSize();
     box.querySelector("video").onerror = () => {
       box.querySelector(".hint").textContent = `${s.name} · 無法播放這個檔案（可能是 HEVC 格式且沒有 LRV 預覽檔）`;

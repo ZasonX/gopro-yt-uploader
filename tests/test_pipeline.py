@@ -612,3 +612,23 @@ def test_date_only_time_and_batch_dates(tmp_path):
     items = {i["id"]: i for i in api.set_dates([a["id"], b["id"]], "2025-04-07")["items"]}
     assert items[a["id"]]["local"].startswith("2025-04-07 15:16")   # kept its time
     assert items[b["id"]]["local"].startswith("2025-04-07 14:50")
+
+
+def test_clock_seen_in_the_video_sets_the_start_time(tmp_path):
+    from gopro_uploader.app import Api
+    reset = datetime(2022, 5, 24, 17, 10, 32)  # a reset clock, +8 file times
+    _gopro_clip(tmp_path / "GX010809.MP4", reset, 400, 8)
+    _gopro_clip(tmp_path / "GX010810.MP4", reset, 4, 8)
+    _gopro_clip(tmp_path / "GX010827.MP4", datetime(2025, 4, 4, 8, 33, 21), 10, 8)
+    api = Api("unused.log")
+    items = {i["files"][0]: i for i in api.scan(str(tmp_path))["items"]}
+    key = items["GX010809.MP4"]["id"]
+    srcs = api.preview_sources(key)
+    assert srcs[0]["start"] == 0
+    # a clock shows 下午 3:54 at 2:48 into GX010809
+    it = {i["files"][0]: i for i in api.time_from_clock(key, 168.0, "15:54")["items"]}
+    assert it["GX010809.MP4"]["title"] == "2025-04-04 15:51" and it["GX010809.MP4"]["time_known"]
+    assert it["GX010810.MP4"]["title"].startswith("2025-04-04") and not it["GX010810.MP4"]["time_known"]
+    # just after midnight on the clock -> the recording started the day before
+    it = {i["files"][0]: i for i in api.time_from_clock(key, 300.0, "00:02")["items"]}
+    assert it["GX010809.MP4"]["local"].startswith("2025-04-03 23:57")
