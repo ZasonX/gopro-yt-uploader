@@ -54,8 +54,12 @@ td.title input.locked { font-weight: 600; }
 td.files { font-family: Consolas, monospace; font-size: 12px; }
 td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
+/* only problems stand out; normal sources (GPS, camera clock, manual) are quiet text */
+.src { font-size: 12px; color: var(--muted); }
 .tag.gps { color: var(--ok); border-color: var(--ok); }
-.tag.nearby, .tag.manual { color: var(--warn); border-color: var(--warn); }
+.tag.nearby { color: var(--warn); border-color: var(--warn); }
+a.ext { font-size: 12px; color: var(--accent2); text-decoration: none; white-space: nowrap; }
+a.ext:hover { text-decoration: underline; }
 .tag.suspect { color: var(--accent); border-color: var(--accent); }
 .hint.warn { color: var(--accent); }
 .st { font-size: 12px; }
@@ -371,7 +375,7 @@ function statusHtml(it) {
     h += `${p.parts > 1 ? ` ${p.part}/${p.parts}` : ""} ${pct.toFixed(0)}%<div class="bar"><div style="width:${pct}%"></div></div>`;
   }
   if (it.status === "uploaded" && it.video_ids?.length)
-    h += " " + it.video_ids.map(v => `<a href="https://youtu.be/${v}" target="_blank">▶</a>`).join(" ");
+    h += " " + it.video_ids.map(v => `<a class="ext" href="https://youtu.be/${v}" target="_blank" title="在瀏覽器開啟 YouTube 影片頁">YouTube ↗</a>`).join(" ");
   if (it.status === "error" && it.error) h += ` <span title="${esc(it.error)}">ⓘ</span>`;
   return h;
 }
@@ -396,8 +400,8 @@ function render() {
           ${onYT ? "disabled" : ""}>`;
       })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}${["uploaded", "partial"].includes(it.status) && !it.yt
         ? ' <span class="tag suspect" title="還沒從 YouTube 讀過這支影片的資料，這裡顯示的是上傳當時的標題；在 Studio 改過的話會不一樣。登入 YouTube 後重新掃描就會讀取。">⚠ 上傳時的標題</span>' : ""}</span></td>
-      <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了；預設不上傳，請在右側填入正確時間">⚠ 時間可疑</span>'
-        : `<span class="tag ${it.time_source === "gps" ? "gps" : it.time_source === "manual" ? "manual" : ""}">${TSRC[it.time_source] || it.time_source}</span>`}</td>
+      <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。建議在右側填入正確時間；不改也可以上傳">⚠ 時間可疑</span>'
+        : `<span class="src" title="拍攝時間的來源">${TSRC[it.time_source] || it.time_source}</span>`}</td>
       <td>${fmtDur(it.duration)}</td>
       ${it.yt && "yt_has_location" in it  // uploaded: show YouTube's location, not the local plan
         ? `<td class="place" title="YouTube 上的地點">${it.yt_has_location
