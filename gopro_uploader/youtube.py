@@ -161,6 +161,25 @@ def video_body(title, description, category_id, privacy, recording_date,
     return body
 
 
+def update_snippet(yt, video_id: str, title: str | None = None, description: str | None = None) -> dict:
+    """Change the title and/or description of an uploaded video (about 50 quota units).
+
+    videos.update replaces the whole snippet, so the current one is read first and only
+    the given fields are changed (category, languages and tags are kept). Returns the new snippet.
+    """
+    items = _execute(yt.videos().list(id=video_id, part="snippet")).get("items") or []
+    if not items:
+        raise ValueError(f"YouTube 上找不到影片 {video_id}")
+    sn = items[0]["snippet"]
+    body = {k: sn[k] for k in ("title", "description", "categoryId", "tags",
+                               "defaultLanguage", "defaultAudioLanguage") if k in sn}
+    if title is not None:
+        body["title"] = title[:100]
+    if description is not None:
+        body["description"] = description[:5000]
+    return _execute(yt.videos().update(part="snippet", body={"id": video_id, "snippet": body}))["snippet"]
+
+
 def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
     """What YouTube has now for these videos (1 quota unit per 50). Missing ids are left out."""
     out = {}

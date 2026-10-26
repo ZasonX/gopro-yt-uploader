@@ -96,8 +96,14 @@ class Api:
             # deleted on YouTube: let it be ticked and uploaded again
             it["status"] = "missing"
             return
-        # the row shows what is on YouTube now (edited in Studio), not the local plan
-        it["title"] = live[0]["title"]
+        # the row shows what is on YouTube now (edited in Studio), not the local plan,
+        # except fields edited here after the upload and not yet sent (yt_pending)
+        pending = rec.get("yt_dirty") or []
+        it["yt_pending"] = pending
+        if "title" not in pending:
+            it["title"] = live[0]["title"]
+        if "description" not in pending:
+            it["description"] = live[0].get("description", "")
         it["yt_place"] = live[0].get("place") or ""
         it["yt_has_location"] = live[0].get("lat") is not None
 
@@ -120,6 +126,40 @@ class Api:
         now = datetime.now().isoformat(timespec="minutes")
         for it in uploaded:  # None = not on YouTube any more
             self._store.update(it, yt={v: got.get(v) for v in it["video_ids"]}, yt_checked=now)
+
+    def push_to_youtube(self):
+        """Send titles / descriptions edited here after upload to YouTube, in one go."""
+        self._replan()
+        todo = [it for it in self._items if it.get("yt_pending") and it.get("video_ids")]
+        if not todo:
+            return self._replan()
+        self._say(f"更新 {len(todo)} 支影片的標題 / 說明到 YouTube …")
+        done = 0
+        for it in todo:
+            fields = set(it["yt_pending"])
+            vids = it["video_ids"]
+            try:
+                for n, vid in enumerate(vids, 1):
+                    title = it["title"] + (f" ({n}/{len(vids)})" if len(vids) > 1 else "")
+                    self._with_sign_in(lambda yt, v=vid, t=title: youtube.update_snippet(
+                        yt, v, title=t if "title" in fields else None,
+                        description=it["description"] if "description" in fields else None))
+            except youtube.QuotaExceeded:
+                self._say("YouTube 今日配額用完，剩下的明天再更新", "error")
+                break
+            except Exception as e:  # noqa: BLE001
+                log.exception("update failed")
+                self._say(f"更新失敗（{' + '.join(it['files'])}）：{e}", "error")
+                continue
+            self._store.update(it, yt_dirty=[])
+            done += 1
+            self._say(f"✓ 已更新：{it['title']}")
+            yt_date = ((it.get("yt") or [{}])[0] or {}).get("recording_date")
+            if yt_date and yt_date != it["recording_date"][:10]:
+                self._say(f"  拍攝日期 {it['recording_date'][:10]} 要到 Studio 改（YouTube 上是 {yt_date}）")
+        self._say(f"已更新 {done} / {len(todo)} 支")
+        self._sync_youtube()  # read back what YouTube has now
+        return self._replan()
 
     def refresh_youtube(self):
         # re-plan first: self._items may be from mid-upload (an edit re-planned while the
@@ -276,24 +316,47 @@ class Api:
         self._say(f"修改 {name}：" + "，".join(parts))
 
     def _locked(self, item_id: str) -> bool:
-        """Uploading or uploaded: its data is already on YouTube, edits here would do nothing."""
-        if item_id == self._uploading_id:
-            return True
-        it = next((i for i in self._items if i["id"] == item_id), None)
-        return bool(it and it["status"] in ("uploaded", "partial"))
+        """Being uploaded right now. (Uploaded ones can be edited and sent with push_to_youtube.)"""
+        return item_id == self._uploading_id
+
+    _YT_FIELDS = {"title": "title", "local_time": "title", "tz": "title", "description": "description"}
+
+    def _mark_for_youtube(self, item: dict, fields: dict, ov: dict):
+        """An uploaded video was edited here: remember which YouTube fields to send later.
+
+        Its title is seeded from YouTube's current one first, so a change of time only
+        rewrites the leading date/time and never drops words typed in Studio.
+        """
+        rec = self._store.lookup(item) or {}
+        dirty = set(rec.get("yt_dirty") or [])
+        for k, v in fields.items():
+            target = self._YT_FIELDS.get(k)
+            if not target:
+                continue
+            if v is None and k in ("title", "description"):  # 還原 = back to what YouTube has
+                dirty.discard(target)
+                continue
+            if target == "title" and "title" not in ov and k != "title":
+                ov["title"] = item["title"]
+            dirty.add(target)
+        self._store.update(item, yt_dirty=sorted(dirty))
 
     def edit(self, ids: list[str], fields: dict):
         if any(k != "include" for k in fields):
             skipped = [i for i in ids if self._locked(i)]
             if skipped:
-                self._say(f"略過 {len(skipped)} 段上傳中或已上傳的錄影；已上傳的請到 YouTube Studio 修改")
+                self._say("略過正在上傳的錄影，等它傳完再改")
             ids = [i for i in ids if i not in skipped]
+        by_id = {it["id"]: it for it in self._items}
         if ids and fields.get("place") and fields.get("lat") is not None and fields.get("lon") is not None:
             self._remember_place(fields["place"], fields["lat"], fields["lon"])
         for i in ids:
             if any(k != "include" for k in fields):  # ticks are too chatty to log
                 self._log_edit(i, fields)
             ov = self._overrides.setdefault(i, {})
+            it = by_id.get(i)
+            if it and it["status"] in ("uploaded", "partial"):
+                self._mark_for_youtube(it, fields, ov)
             for k, v in fields.items():
                 if v is None:
                     ov.pop(k, None)

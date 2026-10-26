@@ -248,6 +248,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <span id="offset" class="hint"></span>
     <span class="spacer"></span>
     <button class="btnExport" title="把最近的執行紀錄和設定打包成 zip（不含登入憑證），回報問題時用">匯出紀錄</button>
+    <button id="btnPush" hidden title="把已上傳影片在這裡改過的標題 / 說明送到 YouTube（每支約 50 配額單位）">更新到 YouTube</button>
     <button id="btnGeocode" disabled>查詢地名</button>
     <button id="btnCancel" disabled>停止</button>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
@@ -447,6 +448,8 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.title_date_mismatch && !ON_YT.includes(i.status) },
   { key: "missing", level: "red", label: "YouTube 上已刪除", tip: "上傳過，但在 YouTube 上找不到了", test: i => i.status === "missing" },
   { key: "error", level: "red", label: "上傳失敗", tip: "滑鼠移到狀態欄的 ⓘ 看原因", test: i => i.status === "error" },
+  { key: "pending", level: "yellow", label: "待更新到 YouTube", tip: "已上傳的影片在這裡改了標題或說明，還沒送到 YouTube",
+    test: i => (i.yt_pending || []).length > 0 },
   { key: "short", level: "yellow", label: "會變成 Shorts", tip: "直式（相機直拿）而且 3 分鐘以內，YouTube 會歸到 Shorts",
     test: i => i.short },
   { key: "guess", level: "gray", label: "推測日期", tip: "相機時鐘重設過，日期依前後錄影推測，標題只放日期",
@@ -540,6 +543,10 @@ function refreshButtons() {
   $("#btnUpload").textContent = todo ? `開始上傳（${todo} 段）` : "開始上傳";
   $("#btnUpload").title = todo ? "上傳表格中「上傳」欄打勾的錄影" : "先在表格的「上傳」欄，或右側的「要上傳」打勾";
   $("#btnCancel").disabled = !uploading;
+  const pend = items.filter(i => (i.yt_pending || []).length).length;
+  $("#btnPush").hidden = !pend;
+  $("#btnPush").disabled = uploading;
+  $("#btnPush").textContent = `更新到 YouTube（${pend} 支）`;
 }
 
 // ---------------------------------------------------------------- table events
@@ -744,24 +751,27 @@ function renderDetail() {
   const d = $("#detail"), sel = items.filter(i => selected.has(i.id));
   if (!sel.length) { d.innerHTML = '<div class="hint">點表格選一段或多段錄影（Ctrl / Shift 可多選），就能在這裡修改。</div>'; return; }
   const one = sel.length === 1 ? sel[0] : null, ids = [...selected];
-  const locked = sel.some(i => ["uploading", "merging", "uploaded", "partial"].includes(i.status));
-  if (one && locked) {  // already on YouTube: show YouTube's data instead of fields that can't change
-    const busyNow = ["uploading", "merging"].includes(one.status);
-    d.innerHTML = `${busyNow ? '<div class="hint">正在上傳，完成後這裡會顯示 YouTube 上的資料。</div>'
-        : one.yt ? ytBox(one)
-        : `<div class="hint">已上傳，但還沒從 YouTube 讀過這支影片的資料。登入 YouTube 後重新掃描，這裡就會顯示 YouTube 上的標題、地點等資料（之後會存起來，沒登入也看得到）。</div>
-           ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
-             <a class="btnlink" href="https://studio.youtube.com/video/${esc(v)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a></div>`).join("")}`}`;
-    wireCopy(d);
+  // only a recording being uploaded right now is locked; uploaded ones can be edited and sent later
+  const locked = sel.some(i => ["uploading", "merging"].includes(i.status));
+  if (one && locked) {
+    d.innerHTML = '<div class="hint">正在上傳，傳完就可以修改。</div>';
     return;
   }
+  const onYT = one && ["uploaded", "partial"].includes(one.status);
+  const ytTop = !onYT ? "" : (one.yt ? ytBox(one)
+    : `<div class="hint">已上傳，但還沒從 YouTube 讀過這支影片的資料。登入 YouTube 後重新掃描，就會顯示 YouTube 上的資料。</div>
+       ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
+         <a class="btnlink" href="https://studio.youtube.com/video/${esc(v)}/edit" target="_blank">✎ 在 YouTube Studio 修改</a></div>`).join("")}`)
+    + (onYT ? `<div class="hint ${one.yt_pending?.length ? "warn" : ""}">${one.yt_pending?.length
+        ? `已修改${one.yt_pending.map(f => f === "title" ? "標題" : "說明").join("、")}，還沒送出：按下方「更新到 YouTube」才會改到 YouTube 上。`
+        : "已經上傳。在下面改標題、說明或時間，之後按下方「更新到 YouTube」一次送出（地點要到 Studio 改）。"}</div>` : "");
   // which groups of fields the user has changed (on any of the selected recordings)
   const GROUPS = { title: ["title"], desc: ["description"], time: ["local_time", "tz"], place: ["place", "lat", "lon"] };
   const edited = g => sel.some(i => i.edited.some(k => GROUPS[g].includes(k)));
   const head = (g, label) => `<div class="gh"><b>${label}</b>
     ${edited(g) ? `<span class="badge">已修改</span><button class="mini" data-reset="${g}" title="還原成自動判斷的值">還原</button>` : ""}</div>`;
-  d.innerHTML = `
-    ${locked ? `<div class="hint warn">${one ? "這段錄影" : "已選的錄影中有些"}${one?.status === "uploading" || one?.status === "merging" ? "正在上傳" : "已經上傳到 YouTube"}，這裡的修改不會影響 YouTube 上的影片，所以先鎖住了。要改請到 YouTube Studio。</div>` : ""}
+  d.innerHTML = `${ytTop}
+    ${locked ? '<div class="hint warn">已選的錄影中有正在上傳的，先不能改。</div>' : ""}
     ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
     ${one?.time_suspect ? `<div class="hint ${one.date_uncertain || !one.date_guess ? "warn" : ""}">相機時鐘重設過，檔案裡沒有真實時間。${
         one.date_uncertain ? `前後錄影的日期不同，先用 ${esc(one.date_guess)}，請確認日期。`
@@ -1010,6 +1020,13 @@ $("#btnUpload").onclick = async () => {
   uploading = true; render(); await call("start_upload");
 };
 $("#btnCancel").onclick = () => call("cancel");
+$("#btnPush").onclick = async () => {
+  const list = items.filter(i => (i.yt_pending || []).length);
+  const names = list.slice(0, 10).map(i => `・${i.title}`).join("\n") + (list.length > 10 ? `\n…還有 ${list.length - 10} 支` : "");
+  if (!confirm(`要把這 ${list.length} 支影片改過的標題 / 說明更新到 YouTube 嗎？\n\n${names}`)) return;
+  busy("更新到 YouTube…");
+  try { setPlan(await call("push_to_youtube")); } finally { busy(null); }
+};
 
 $("#btnSignIn").onclick = async () => {
   if (!INIT.has_secret) { log("請先到「設定」匯入 Google Cloud 下載的 client_secret.json（步驟見 README）", "error"); openSettings(); return; }

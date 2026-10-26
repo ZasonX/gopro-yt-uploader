@@ -272,15 +272,41 @@ def test_upload_body_sends_no_location():
     assert not hasattr(youtube, "set_location")
 
 
-def test_uploaded_recordings_cannot_be_edited(tmp_path):
+def test_uploaded_recordings_can_be_edited_and_pushed_later(tmp_path):
+    # upload first, fix titles afterwards: edits are kept and marked for YouTube
+    from gopro_uploader import youtube
     from gopro_uploader.app import Api
     make_mp4(tmp_path / "GX010797.MP4", CAM, 4.0, [])
     api = Api("unused.log")
+    api._emit = lambda *a, **k: None
     item = api.scan(str(tmp_path))["items"][0]
-    api._store.update(item, status="uploaded", video_ids=["VIDEO_ID_01"])
-    api._replan()
-    res = api.edit([item["id"]], {"title": "改了也沒用"})
-    assert res["items"][0]["title"] == "2026-03-15 14:32 JST" and res["items"][0]["edited"] == []
+    api._store.update(item, status="uploaded", video_ids=["B8"],
+                      yt={"B8": {"title": "2026-03-15 14:32 JST 在 Studio 打的字", "description": "GX010797.MP4",
+                                 "privacy": "unlisted", "recording_date": "2026-03-15", "place": "",
+                                 "lat": None, "lon": None, "title_language": "zh-TW", "audio_language": "zh-TW"}},
+                      yt_checked="2025-04-27T10:00")
+    it = api._replan()["items"][0]
+    assert it["title"] == "2026-03-15 14:32 JST 在 Studio 打的字" and it["yt_pending"] == []
+
+    # a new time rewrites only the leading time of YouTube's title, and marks it pending
+    it = api.edit([item["id"]], {"local_time": "2026-03-15T15:00"})["items"][0]
+    assert it["title"] == "2026-03-15 15:00 JST 在 Studio 打的字" and it["yt_pending"] == ["title"]
+    note = "GX010797.MP4\n連 APP 更新時區"
+    it = api.edit([item["id"]], {"description": note})["items"][0]
+    assert it["yt_pending"] == ["description", "title"]
+
+    sent = []
+    upd = youtube.update_snippet
+    youtube.update_snippet = lambda yt, vid, title=None, description=None: sent.append((vid, title, description)) or {}
+    fetch = youtube.fetch_videos
+    youtube.fetch_videos = lambda yt, ids: {}
+    try:
+        api._yt = object()
+        api.push_to_youtube()
+    finally:
+        youtube.update_snippet, youtube.fetch_videos = upd, fetch
+    assert sent == [("B8", "2026-03-15 15:00 JST 在 Studio 打的字", note)]
+    assert (api._store.lookup(item) or {}).get("yt_dirty") == []
 
 
 def test_uploaded_rows_show_youtube_data_and_deleted_videos_can_be_reuploaded(tmp_path):
