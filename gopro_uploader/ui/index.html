@@ -103,6 +103,10 @@ a.btnlink:hover { filter: brightness(1.1); }
 .grp.yt .warn, .st.missing { color: var(--accent); }
 .detail .row2 { display: flex; gap: 6px; }
 .detail .row2 > * { flex: 1; }
+#ctxmenu { position: fixed; z-index: 10000; display: flex; flex-direction: column; min-width: 220px; padding: 4px;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.3); }
+#ctxmenu button { border: none; text-align: left; padding: 7px 12px; background: transparent; }
+#ctxmenu button:hover { background: var(--sel); }
 .copyrow { display: flex; gap: 6px; align-items: center; }
 .copyrow input { flex: 1; min-width: 0; }
 .copyrow button.mini { margin-left: 0; }
@@ -179,7 +183,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       <thead><tr>
         <th class="inc" title="打勾的錄影，會在按「開始上傳」時上傳。點這裡可以全選 / 全部取消">
           <label><input type="checkbox" id="chkAll">上傳</label></th>
-        <th>狀態</th><th>標題 / 原始檔</th><th>時間</th><th>長度</th><th>地點</th>
+        <th>狀態</th><th title="在列上按右鍵：用預設播放器開啟原始檔、在資料夾中顯示">標題 / 原始檔 <span class="hint">（右鍵可開啟原始檔）</span></th><th>時間</th><th>長度</th><th>地點</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -437,6 +441,30 @@ $("#rows").addEventListener("change", async e => {
   const id = tr.dataset.id;
   if (e.target.classList.contains("inc")) setPlan(await call("edit", [id], { include: e.target.checked }));
   else if (e.target.closest("td.title")) setPlan(await call("edit", [id], { title: e.target.value.trim() || null }));
+});
+// right-click a row: open the original file / show it in Explorer / copy its name
+function closeMenu() { $("#ctxmenu")?.remove(); }
+document.addEventListener("click", closeMenu);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
+window.addEventListener("blur", closeMenu);
+$("#rows").addEventListener("contextmenu", e => {
+  const tr = e.target.closest("tr.row"); if (!tr) return;
+  e.preventDefault(); closeMenu();
+  const it = items.find(i => i.id === tr.dataset.id); if (!it) return;
+  if (!selected.has(it.id)) selectItem(it.id);
+  const many = it.files.length > 1;
+  const entries = it.files.flatMap((f, n) => [
+    { label: `▶ 用預設播放器開啟原始檔${many ? `（${f}）` : ""}`, run: () => call("open_original", it.id, n) },
+    { label: `📂 在資料夾中顯示${many ? `（${f}）` : ""}`, run: () => call("reveal_file", it.id, n) },
+  ]).concat([{ label: `📋 複製檔名（${it.files.join(" + ")}）`, run: () => navigator.clipboard.writeText(it.files.join("\n")) }]);
+  const m = document.createElement("div");
+  m.id = "ctxmenu";
+  m.innerHTML = entries.map((x, n) => `<button data-n="${n}">${esc(x.label)}</button>`).join("");
+  m.querySelectorAll("button").forEach(b => b.onclick = ev => { ev.stopPropagation(); closeMenu(); entries[+b.dataset.n].run(); });
+  document.body.append(m);
+  const r = m.getBoundingClientRect();  // keep it on screen
+  m.style.left = Math.min(e.clientX, innerWidth - r.width - 8) + "px";
+  m.style.top = Math.min(e.clientY, innerHeight - r.height - 8) + "px";
 });
 $("#chkAll").addEventListener("change", async e => {
   setPlan(await call("edit", items.filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));

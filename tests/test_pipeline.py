@@ -546,3 +546,18 @@ def test_refresh_after_upload_reads_youtube_even_if_items_went_stale(tmp_path):
     up = items["GX010799.MP4"]
     assert up["status"] == "uploaded" and up["yt"][0]["id"] == "VIDEO_ID_02"
     assert up["include"] is False
+
+
+def test_only_scanned_files_can_be_opened_or_revealed(tmp_path, monkeypatch):
+    import subprocess
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    make_mp4(tmp_path / "GX020001.MP4", CAM, 4.0, [])
+    api = Api("unused.log")
+    key = api.scan(str(tmp_path))["items"][0]["id"]
+    ran = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **k: ran.append(args))
+    assert api.reveal_file(key, 1) is True
+    assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GX020001.MP4'))}"]]
+    assert api.reveal_file(key, 5) is False and api.reveal_file("not-a-key") is False
+    assert api.open_original(str(tmp_path / "GX010001.MP4")) is False  # a path is not an id

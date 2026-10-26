@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -397,6 +398,30 @@ class Api:
         files = store_export_logs(dest)
         self._say(f"已匯出紀錄（{len(files)} 個檔案，不含登入憑證）：{dest}")
         return dest
+
+    def _scanned_file(self, item_id: str, index: int = 0) -> str | None:
+        """Only files of a scanned recording can be opened from the page."""
+        it = next((i for i in self._items if i["id"] == item_id), None)
+        if not it or not (0 <= index < len(it["paths"])):
+            return None
+        p = it["paths"][index]
+        return p if os.path.isfile(p) else None
+
+    def reveal_file(self, item_id: str, index: int = 0):
+        """Open Explorer at the file's folder with the file selected."""
+        p = self._scanned_file(item_id, index)
+        if not p:
+            return False
+        subprocess.Popen(["explorer", f"/select,{os.path.normpath(p)}"])  # noqa: S603,S607
+        return True
+
+    def open_original(self, item_id: str, index: int = 0):
+        """Play the original (full-resolution) file in the default player."""
+        p = self._scanned_file(item_id, index)
+        if not p:
+            return False
+        os.startfile(p)  # noqa: S606 - Windows only, user-initiated
+        return True
 
     def open_path(self, which: str):
         target = {"data": config.app_dir(), "log": self._log_file,
