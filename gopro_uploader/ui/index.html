@@ -48,7 +48,10 @@ tr.row.done td { color: var(--muted); }
 td.title { width: 100%; }
 td.title .t { display: block; min-width: 160px; padding: 2px 4px; white-space: normal; }
 td.title .fn { display: block; padding-left: 5px; font: 11px Consolas, monospace; color: var(--muted); }
-th.inc label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+th.inc label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+/* big ticks; the whole first cell toggles, so ticking many rows is easy */
+input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent2); }
+td.inccell { cursor: pointer; padding-left: 12px; padding-right: 12px; }
 td.title .t.locked { font-weight: 600; }
 td.files { font-family: Consolas, monospace; font-size: 12px; }
 td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
@@ -389,7 +392,7 @@ function render() {
   $("#empty").style.display = items.length ? "none" : "";
   tb.innerHTML = items.map(it => `
     <tr class="row ${selected.has(it.id) ? "sel" : ""} ${it.status === "uploaded" ? "done" : ""}" data-id="${esc(it.id)}">
-      <td><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
+      <td class="inccell" title="打勾 = 按「開始上傳」時上傳"><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
       <td class="status">${statusHtml(it)}</td>
       <td class="title">${(() => {  // display only: titles are edited in the panel on the right
         const warn = it.title_date_mismatch && !["uploading", "merging", "uploaded", "partial"].includes(it.status);
@@ -433,6 +436,11 @@ function refreshButtons() {
 // ---------------------------------------------------------------- table events
 $("#rows").addEventListener("click", e => {
   const tr = e.target.closest("tr.row"); if (!tr || e.target.matches("input, a")) return;
+  if (e.target.closest("td.inccell")) {  // clicking around the tick toggles it, not the selection
+    const box = tr.querySelector("input.inc");
+    if (!box.disabled) { box.checked = !box.checked; box.dispatchEvent(new Event("change", { bubbles: true })); }
+    return;
+  }
   const id = tr.dataset.id, ids = items.map(i => i.id);
   if (e.shiftKey && lastClicked) {
     const [a, b] = [ids.indexOf(lastClicked), ids.indexOf(id)].sort((x, y) => x - y);
@@ -526,6 +534,15 @@ async function renderPreview() {
           <button class="btnClock" title="影片裡拍到時鐘時：先暫停在那一格，按這裡輸入看到的時間，程式會算出這段錄影幾點開始">🕒 我看到時鐘</button>
         </span>
       </div>`;
+    // volume: 50% the first time, then whatever was used last (GoPro audio is loud)
+    const vid = box.querySelector("video");
+    try {
+      vid.volume = Math.min(Math.max(parseFloat(localStorage.getItem("previewVolume") ?? "0.5"), 0), 1);
+      vid.muted = localStorage.getItem("previewMuted") === "1";
+    } catch { vid.volume = 0.5; }
+    vid.onvolumechange = () => {
+      try { localStorage.setItem("previewVolume", String(vid.volume)); localStorage.setItem("previewMuted", vid.muted ? "1" : "0"); } catch {}
+    };
     const cf = box.querySelector(".clockfix");
     cf.querySelector(".btnClock").onclick = () => {
       const v = box.querySelector("video"); v.pause();
@@ -672,7 +689,9 @@ function renderDetail() {
       if (e.key === "Enter" && !e.isComposing) el.blur();
       if (e.key === "Escape") { el.value = orig; el.blur(); }
     };
-    el.onblur = () => { if (el.value !== orig) fn(el.value.trim()); };
+    // Leaving the field by clicking a button: the save re-renders the panel, which would
+    // swap out that button before its click lands. So wait until the click has happened.
+    el.onblur = () => { if (el.value !== orig) afterPointer(() => fn(el.value.trim())); };
   };
   onCommit($("#titleInput"), v => save({ title: v || null }));
   const fix = $("#btnFixDate");
@@ -719,6 +738,16 @@ function renderDetail() {
   };
   $("#btnSearch").onclick = doSearch;
   $("#searchQ").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+}
+let pointerDown = false;
+document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
+document.addEventListener("pointerup", () => setTimeout(() => { pointerDown = false; }, 0), true);
+function afterPointer(fn) {  // run fn now, or right after the click that is in progress
+  if (!pointerDown) return fn();
+  let done = false;
+  const go = () => { if (!done) { done = true; setTimeout(fn, 0); } };
+  document.addEventListener("click", go, { once: true });
+  setTimeout(go, 600);  // pointer released without a click (e.g. a drag)
 }
 function wireCopy(root) {
   root.querySelectorAll("[data-copy]").forEach(b => b.onclick = async e => {
