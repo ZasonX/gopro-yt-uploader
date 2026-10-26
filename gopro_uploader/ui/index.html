@@ -399,7 +399,11 @@ function render() {
       <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了；預設不上傳，請在右側填入正確時間">⚠ 時間可疑</span>'
         : `<span class="tag ${it.time_source === "gps" ? "gps" : it.time_source === "manual" ? "manual" : ""}">${TSRC[it.time_source] || it.time_source}</span>`}</td>
       <td>${fmtDur(it.duration)}</td>
-      <td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>
+      ${it.yt && "yt_has_location" in it  // uploaded: show YouTube's location, not the local plan
+        ? `<td class="place" title="YouTube 上的地點">${it.yt_has_location
+            ? `<span class="tag gps">YouTube</span> ${esc(it.yt_place || "（沒有名稱）")}`
+            : '<span class="tag suspect">YouTube 未設定</span>'}</td>`
+        : `<td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>`}
     </tr>`).join("");
   summary(); refreshButtons();
 }
@@ -678,12 +682,18 @@ function wireCopy(root) {
     catch { const t = document.createElement("textarea"); t.value = b.dataset.copy; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
     const old = b.textContent; b.textContent = "已複製 ✓"; setTimeout(() => (b.textContent = old), 1500);
   });
+  root.querySelectorAll(".btnYtRefresh").forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "讀取中…";
+    try { setPlan(await call("refresh_youtube")); log("已從 YouTube 重新讀取已上傳影片的資料"); }
+    finally { b.disabled = false; b.textContent = "↻ 重新讀取"; }
+  });
 }
 function ytBox(it) {
   const row = (k, v) => `<div><span class="hint">${k}</span><span>${v}</span></div>`;
   const when = it.yt_checked ? it.yt_checked.replace("T", " ") : "";
   return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b>
-      <span class="hint" style="margin-left:auto" title="登入 YouTube 時，每次掃描都會重新讀取">${when} 讀取</span></div>
+      <span class="hint" style="margin-left:auto">${when} 讀取</span>
+      ${n === 0 ? '<button class="mini btnYtRefresh" style="margin-left:6px" title="在 Studio 改完後，按這裡讀取 YouTube 上最新的資料">↻ 重新讀取</button>' : ""}</div>
     ${y.missing ? '<div class="hint warn">YouTube 上找不到這支影片（可能已刪除）。可以重新勾選上傳。</div>' : `
       ${row("標題", esc(y.title))}
       ${row("說明", y.description ? `<span class="desc">${esc(y.description)}</span>` : '<span class="hint">（空白）</span>')}

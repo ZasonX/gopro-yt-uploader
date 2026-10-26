@@ -313,6 +313,7 @@ def test_uploaded_rows_show_youtube_data_and_deleted_videos_can_be_reuploaded(tm
     a, b = items["GX010797.MP4"], items["GX010798.MP4"]
     assert a["status"] == "uploaded" and a["title"] == "2025-04-04 範例車站 東口"
     assert a["yt"][0]["place"] == "車站大廳"
+    assert a["yt_place"] == "車站大廳" and a["yt_has_location"]  # the row shows YouTube's place
     assert b["status"] == "missing" and b["yt"] == [{"id": "gone", "missing": True}]
     assert not api._locked(b["id"])  # can be edited and ticked again
 

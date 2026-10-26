@@ -90,7 +90,10 @@ class Api:
             # deleted on YouTube: let it be ticked and uploaded again
             it["status"] = "missing"
             return
+        # the row shows what is on YouTube now (edited in Studio), not the local plan
         it["title"] = live[0]["title"]
+        it["yt_place"] = live[0].get("place") or ""
+        it["yt_has_location"] = live[0].get("lat") is not None
 
     def _sync_youtube(self):
         uploaded = [it for it in self._items if it["status"] in ("uploaded", "partial") and it.get("video_ids")]
