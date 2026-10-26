@@ -691,3 +691,19 @@ def test_taskbar_is_harmless_without_a_window():
     tb.progress(0.5)
     tb.state(taskbar.ERROR)
     tb.flash()  # nothing to show it on: silently does nothing
+
+
+def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
+    import subprocess
+    from gopro_uploader.app import Api
+    make_mp4(tmp_path / "GX010804.MP4", CAM, 4.0, [])
+    (tmp_path / "GOPR0805.JPG").write_bytes(b"jpg")
+    (tmp_path / "secret.txt").write_text("x")
+    api = Api("unused.log")
+    api.scan(str(tmp_path))
+    ran = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **k: ran.append(args))
+    assert api.reveal_photo(str(tmp_path), "GOPR0805.JPG") is True
+    assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GOPR0805.JPG'))}"]]
+    assert api.reveal_photo(str(tmp_path), "secret.txt") is False
+    assert api.open_photo(str(tmp_path), "..\secret.txt") is False

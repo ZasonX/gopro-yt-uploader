@@ -458,6 +458,27 @@ class Api:
         subprocess.Popen(["explorer", f"/select,{os.path.normpath(p)}"])  # noqa: S603,S607
         return True
 
+    def _scanned_photo(self, folder: str, name: str) -> str | None:
+        """Only photos found by the last scan can be opened from the page."""
+        if not any(p["folder"] == folder and p["name"] == name for p in self._photos):
+            return None
+        p = os.path.join(folder, name)
+        return p if os.path.isfile(p) else None
+
+    def reveal_photo(self, folder: str, name: str):
+        p = self._scanned_photo(folder, name)
+        if not p:
+            return False
+        subprocess.Popen(["explorer", f"/select,{os.path.normpath(p)}"])  # noqa: S603,S607
+        return True
+
+    def open_photo(self, folder: str, name: str):
+        p = self._scanned_photo(folder, name)
+        if not p:
+            return False
+        os.startfile(p)  # noqa: S606 - Windows only, user-initiated
+        return True
+
     def open_original(self, item_id: str, index: int = 0):
         """Play the original (full-resolution) file in the default player."""
         p = self._scanned_file(item_id, index)

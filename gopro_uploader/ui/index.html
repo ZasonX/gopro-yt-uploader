@@ -149,6 +149,7 @@ a.btnlink:hover { filter: brightness(1.1); }
 .checks .chip.static { cursor: default; }
 .checks .chip.clear { color: var(--accent2); }
 tr.gap td { padding: 2px 8px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--line) 25%, transparent); }
+tr.gap button.gapopen { margin-left: 8px; padding: 0 8px; font-size: 11px; border-radius: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .chip { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
 
@@ -465,11 +466,20 @@ function renderChecks() {
   if (filterKey && !chips.some(c => c.key === filterKey)) filterKey = null;
   box.innerHTML = !items.length ? "" : (chips.map(c => `<button class="chip ${c.level} ${filterKey === c.key ? "on" : ""}" data-k="${c.key}"
       title="${esc(c.tip)}${c.tip ? "。" : ""}點一下只顯示這些，再點一下顯示全部">${c.label} ${c.n}</button>`).join("")
-    + (photos.length ? `<span class="chip gray static" title="GoPro 的照片和影片共用編號，所以影片編號會跳號；照片不會上傳">照片 ${photos.length}</span>` : "")
+    + (photos.length ? `<button class="chip gray" id="chipPhotos" title="GoPro 的照片和影片共用編號，所以影片編號會跳號；照片不會上傳。點一下可以開啟照片">照片 ${photos.length} ▾</button>` : "")
     + (filterKey ? `<button class="chip clear" data-k="">顯示全部 ×</button>` : "")) ;
   box.querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
     filterKey = b.dataset.k && filterKey !== b.dataset.k ? b.dataset.k : null; render();
   });
+  const pc = $("#chipPhotos");
+  if (pc) pc.onclick = e => {
+    e.stopPropagation();
+    const r = pc.getBoundingClientRect();
+    showMenu(r.left, r.bottom + 2, photos.flatMap(p => [
+      { label: `🖼 開啟照片（${p.name}）`, run: () => call("open_photo", p.folder, p.name) },
+      { label: `📂 在資料夾中顯示（${p.name}）`, run: () => call("reveal_photo", p.folder, p.name) },
+    ]));
+  };
 }
 function gapRow(prev, next) {  // numbers skipped between two neighbouring rows: photos, or nothing
   if (prev?.number == null || next?.number == null || prev.folder !== next.folder || next.number <= prev.number + 1) return "";
@@ -477,7 +487,10 @@ function gapRow(prev, next) {  // numbers skipped between two neighbouring rows:
   const ph = photos.filter(p => p.folder === prev.folder && p.number >= lo && p.number <= hi);
   const nums = lo === hi ? String(lo).padStart(4, "0") : `${String(lo).padStart(4, "0")}～${String(hi).padStart(4, "0")}`;
   const what = ph.length ? `${ph.length} 張照片（不上傳）` : "沒有檔案（可能刪掉了，或在別的資料夾）";
-  return `<tr class="gap"><td></td><td colspan="5" title="${esc(ph.map(p => p.name).join("\n"))}">${nums}：${what}</td></tr>`;
+  const names = ph.map(p => p.name);
+  return `<tr class="gap" ${ph.length ? `data-folder="${esc(prev.folder)}" data-photos="${esc(JSON.stringify(names))}"` : ""}>
+    <td></td><td colspan="5" title="${esc(names.join("\n"))}${ph.length ? "\n（右鍵可開啟照片）" : ""}">${nums}：${what}
+    ${ph.length ? '<button class="gapopen" title="在資料夾中顯示這些照片">📂 在資料夾中顯示</button>' : ""}</td></tr>`;
 }
 
 function render() {
@@ -557,25 +570,43 @@ function closeMenu() { $("#ctxmenu")?.remove(); }
 document.addEventListener("click", closeMenu);
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
 window.addEventListener("blur", closeMenu);
-$("#rows").addEventListener("contextmenu", e => {
-  const tr = e.target.closest("tr.row"); if (!tr) return;
-  e.preventDefault(); closeMenu();
-  const it = items.find(i => i.id === tr.dataset.id); if (!it) return;
-  if (!selected.has(it.id)) selectItem(it.id);
-  const many = it.files.length > 1;
-  const entries = it.files.flatMap((f, n) => [
-    { label: `▶ 用預設播放器開啟原始檔${many ? `（${f}）` : ""}`, run: () => call("open_original", it.id, n) },
-    { label: `📂 在資料夾中顯示${many ? `（${f}）` : ""}`, run: () => call("reveal_file", it.id, n) },
-  ]).concat([{ label: `📋 複製檔名（${it.files.join(" + ")}）`, run: () => navigator.clipboard.writeText(it.files.join("\n")) }]);
+function showMenu(x, y, entries) {
+  closeMenu();
   const m = document.createElement("div");
   m.id = "ctxmenu";
-  m.innerHTML = entries.map((x, n) => `<button data-n="${n}">${esc(x.label)}</button>`).join("");
+  m.innerHTML = entries.map((it, n) => `<button data-n="${n}">${esc(it.label)}</button>`).join("");
   m.querySelectorAll("button").forEach(b => b.onclick = ev => { ev.stopPropagation(); closeMenu(); entries[+b.dataset.n].run(); });
   document.body.append(m);
   const r = m.getBoundingClientRect();  // keep it on screen
-  m.style.left = Math.min(e.clientX, innerWidth - r.width - 8) + "px";
-  m.style.top = Math.min(e.clientY, innerHeight - r.height - 8) + "px";
+  m.style.left = Math.min(x, innerWidth - r.width - 8) + "px";
+  m.style.top = Math.min(y, innerHeight - r.height - 8) + "px";
+}
+function photoMenu(x, y, folder, names) {
+  showMenu(x, y, names.flatMap(n => [
+    { label: `🖼 開啟照片（${n}）`, run: () => call("open_photo", folder, n) },
+    { label: `📂 在資料夾中顯示（${n}）`, run: () => call("reveal_photo", folder, n) },
+  ]));
+}
+$("#rows").addEventListener("contextmenu", e => {
+  const gap = e.target.closest("tr.gap");
+  if (gap?.dataset.photos) { e.preventDefault(); photoMenu(e.clientX, e.clientY, gap.dataset.folder, JSON.parse(gap.dataset.photos)); return; }
+  const tr = e.target.closest("tr.row"); if (!tr) return;
+  e.preventDefault();
+  const it = items.find(i => i.id === tr.dataset.id); if (!it) return;
+  if (!selected.has(it.id)) selectItem(it.id);
+  const many = it.files.length > 1;
+  showMenu(e.clientX, e.clientY, it.files.flatMap((f, n) => [
+    { label: `▶ 用預設播放器開啟原始檔${many ? `（${f}）` : ""}`, run: () => call("open_original", it.id, n) },
+    { label: `📂 在資料夾中顯示${many ? `（${f}）` : ""}`, run: () => call("reveal_file", it.id, n) },
+  ]).concat([{ label: `📋 複製檔名（${it.files.join(" + ")}）`, run: () => navigator.clipboard.writeText(it.files.join("\n")) }]));
 });
+$("#rows").addEventListener("click", e => {  // the 📂 button on a photo gap row
+  const b = e.target.closest("button.gapopen"); if (!b) return;
+  e.stopPropagation();
+  const gap = b.closest("tr.gap"), names = JSON.parse(gap.dataset.photos);
+  if (names.length === 1) call("reveal_photo", gap.dataset.folder, names[0]);
+  else { const r = b.getBoundingClientRect(); photoMenu(r.left, r.bottom + 2, gap.dataset.folder, names); }
+}, true);
 $("#chkAll").addEventListener("change", async e => {
   // only the rows shown under the current filter chip
   setPlan(await call("edit", visibleItems().filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));
