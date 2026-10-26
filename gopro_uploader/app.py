@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 import webview
 
-from . import config, geocode, merge, preview, youtube
+from . import config, geocode, merge, preview, taskbar, youtube
 from .config import TITLE_FORMATS, Settings
 from .planner import build_plan, detect_camera_offset, retime_title
 from .scanner import list_photos, scan
@@ -19,6 +19,8 @@ from .store import Edits, Store, fingerprint, setup_logging
 from .store import export_logs as store_export_logs
 
 log = logging.getLogger("app")
+
+WINDOW_TITLE = "GoPro → YouTube 上傳工具"
 
 
 def _resource(*parts):
@@ -43,6 +45,8 @@ class Api:
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_id: str | None = None
+        self._taskbar = taskbar.Taskbar(WINDOW_TITLE)
+        self._batch = (0, 1)
         self._told_signed_out = False
 
     # ------------------------------------------------------------ helpers
@@ -503,10 +507,12 @@ class Api:
             self._emit("done", msg=f"無法開始上傳：{e}", level="error")
             return
 
-        ok = 0
+        ok, failed = 0, False
+        self._taskbar.progress(0)
         for n, queued in enumerate(todo, 1):
             if self._cancel:
                 break
+            self._batch = (n - 1, len(todo))  # for the taskbar: recordings done, batch size
             # edits made while earlier videos were uploading re-plan self._items;
             # take this recording's latest version, not the snapshot from the start
             item = next((i for i in self._items if i["id"] == queued["id"]), queued)
@@ -525,10 +531,12 @@ class Api:
             except youtube.SignedOut as e:
                 self._signed_out(e)
                 self._set_status(item, "error", error="YouTube 登入失效")
+                failed = True
                 break
             except youtube.QuotaExceeded as e:
                 self._set_status(item, "error", error=f"配額用完：{e}")
                 self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")
+                failed = True
                 break
             except youtube.Cancelled:
                 self._set_status(item, "pending")
@@ -537,7 +545,12 @@ class Api:
                 log.exception("upload failed")
                 self._set_status(item, "error", error=str(e))
                 self._say(f"失敗：{e}", "error")
+                failed = True
+                self._taskbar.state(taskbar.ERROR)
         self._uploading_id = None
+        # done: clear the bar (or leave it red if something failed) and blink the button
+        self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
+        self._taskbar.flash()
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段" + ("（已取消）" if self._cancel else ""))
 
     def _set_status(self, item, status, **extra):
@@ -555,6 +568,7 @@ class Api:
             return [(paths[0], title, False)]
         if self._settings.merge_chapters and merge.ffmpeg_exe():
             self._emit("item", id=item["id"], status="merging")
+            self._taskbar.state(taskbar.INDETERMINATE)
             self._say(f"合併 {len(paths)} 個分段（無損）…")
             return [(merge.merge(paths, cancel=lambda: self._cancel), title, True)]
         return [(p, f"{title} ({i}/{len(paths)})", False) for i, p in enumerate(paths, 1)]
@@ -575,6 +589,10 @@ class Api:
             def progress(done, total, _idx=idx):
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
                            done=done, total=total)
+                # taskbar: whole batch = finished recordings + this one's share so far
+                k, count = self._batch
+                part = (_idx + (done / total if total else 0)) / len(sources)
+                self._taskbar.progress((k + part) / count)
 
             vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel)
             item["video_ids"].append(vid)
@@ -639,7 +657,7 @@ def main():
     except Exception:  # noqa: BLE001 - no screen info: just centre on a default size
         screens = []
     geo = window_geometry(api._settings.window, screens)
-    window = webview.create_window("GoPro → YouTube 上傳工具", _resource("ui", "index.html"),
+    window = webview.create_window(WINDOW_TITLE, _resource("ui", "index.html"),
                                    js_api=api, width=geo["width"], height=geo["height"],
                                    x=geo["x"], y=geo["y"], maximized=geo["maximized"],
                                    min_size=(1000, 650))

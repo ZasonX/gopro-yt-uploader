@@ -683,3 +683,11 @@ def test_window_opens_where_it_was_if_that_screen_is_still_there():
     assert g["x"] == (1920 - 1200) // 2 and g["y"] == (1000 - 800) // 2
     g = window_geometry({}, [(0, 0, 1280, 720)])  # small screen: shrink to fit (but not under the minimum)
     assert g["width"] == 1280 and g["height"] == 720
+
+
+def test_taskbar_is_harmless_without_a_window():
+    from gopro_uploader import taskbar
+    tb = taskbar.Taskbar("no window has this title 9c1e")
+    tb.progress(0.5)
+    tb.state(taskbar.ERROR)
+    tb.flash()  # nothing to show it on: silently does nothing
