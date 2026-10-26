@@ -8,9 +8,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .scanner import Recording, group_key
+from .scanner import Recording, gopro_number, group_key
 
 NEARBY_WINDOW = timedelta(hours=3)
+SHORTS_MAX_SECONDS = 180
 
 
 def detect_camera_offset(recs: list[Recording]) -> timedelta | None:
@@ -144,7 +145,11 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             # hundreds of clips; ticking all by default made "開始上傳" a trap)
             "include": False,
             "scan_errors": [f"{c.name}: {c.error}" for c in rec.clips if c.error],
+            "number": gopro_number(names[0]),
+            # YouTube makes vertical (or square) videos up to 3 minutes a Short
+            "vertical": bool(rec.clips[0].info and rec.clips[0].info.vertical),
         }
+        item["short"] = item["vertical"] and item["duration"] <= SHORTS_MAX_SECONDS
         items.append(item)
 
     _guess_dates(items)

@@ -40,7 +40,20 @@ def gps9_payload(lat, lon, days, secs, fix=3) -> bytes:
     return klv(b"DEVC", "\0", 1, len(devc), devc)
 
 
-def make_mp4(path, camera_time: datetime, duration: float, gps_samples: list[bytes]):
+def video_trak(width=3840, height=2160, rotation=0) -> bytes:
+    """A bare video track: just tkhd (size + rotation matrix) and hdlr 'vide'."""
+    one = 0x10000
+    a, b, c, d = {0: (one, 0, 0, one), 90: (0, one, -one, 0),
+                  180: (-one, 0, 0, -one), 270: (0, -one, one, 0)}[rotation]
+    matrix = struct.pack(">9i", a, b, 0, c, d, 0, 0, 0, 0x40000000)
+    tkhd = full(b"tkhd", struct.pack(">IIIII", 0, 0, 1, 0, 0) + b"\0" * 8
+                + struct.pack(">hhhH", 0, 0, 0, 0) + matrix + struct.pack(">II", width << 16, height << 16))
+    hdlr = full(b"hdlr", b"\0\0\0\0vide" + b"\0" * 12 + b"GoPro AVC\0")
+    return box(b"trak", tkhd + box(b"mdia", hdlr))
+
+
+def make_mp4(path, camera_time: datetime, duration: float, gps_samples: list[bytes], video=None):
+    """video: None, or (width, height, rotation) to add a video track."""
     ctime = int((camera_time - MP4_EPOCH).total_seconds())
     ftyp = box(b"ftyp", b"mp41\0\0\0\0mp41")
     mdat_payload = b"".join(gps_samples)
@@ -62,6 +75,6 @@ def make_mp4(path, camera_time: datetime, duration: float, gps_samples: list[byt
     stco = full(b"stco", struct.pack(">I", n) + b"".join(struct.pack(">I", x) for x in offsets))
     stbl = box(b"stbl", stsd + stts + stsc + stsz + stco)
     trak = box(b"trak", box(b"mdia", mdhd + hdlr + box(b"minf", stbl))) if n else b""
-    moov = box(b"moov", mvhd + trak)
+    moov = box(b"moov", mvhd + (video_trak(*video) if video else b"") + trak)
     with open(path, "wb") as f:
         f.write(ftyp + mdat + moov)

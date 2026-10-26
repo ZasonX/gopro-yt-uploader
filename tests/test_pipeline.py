@@ -632,3 +632,41 @@ def test_clock_seen_in_the_video_sets_the_start_time(tmp_path):
     # just after midnight on the clock -> the recording started the day before
     it = {i["files"][0]: i for i in api.time_from_clock(key, 300.0, "00:02")["items"]}
     assert it["GX010809.MP4"]["local"].startswith("2025-04-03 23:57")
+
+
+def test_vertical_short_clips_are_flagged(tmp_path):
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 24.0, [], video=(3840, 2160, 90))    # camera held sideways
+    make_mp4(tmp_path / "GX010799.MP4", CAM, 36.0, [], video=(3840, 2160, 0))
+    make_mp4(tmp_path / "GX010800.MP4", CAM, 400.0, [], video=(3840, 2160, 270))  # vertical but > 3 min
+    items = {i["files"][0]: i for i in build_plan(scan(str(tmp_path)), config.Settings(), {})}
+    assert items["GX010797.MP4"]["vertical"] and items["GX010797.MP4"]["short"]
+    assert not items["GX010799.MP4"]["vertical"] and not items["GX010799.MP4"]["short"]
+    assert items["GX010800.MP4"]["vertical"] and not items["GX010800.MP4"]["short"]
+
+
+def test_old_cache_entries_get_orientation_without_reparsing(tmp_path, count_parses):
+    import json
+    make_mp4(tmp_path / "GX010797.MP4", CAM, 24.0, [], video=(3840, 2160, 90))
+    scan(str(tmp_path))
+    with open(config.path("scan_cache.json"), encoding="utf-8") as f:
+        data = json.load(f)
+    for e in data["entries"].values():
+        e["info"].pop("dims")  # like a cache written before orientation existed
+    with open(config.path("scan_cache.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    count_parses.clear()
+    recs = scan(str(tmp_path))
+    assert count_parses == [] and recs[0].clips[0].info.vertical  # header read only
+
+
+def test_photos_explain_number_gaps(tmp_path):
+    from gopro_uploader.app import Api
+    from gopro_uploader.scanner import gopro_number, list_photos
+    make_mp4(tmp_path / "GX010804.MP4", CAM, 4.0, [])
+    make_mp4(tmp_path / "GX010807.MP4", CAM.replace(minute=40), 4.0, [])
+    for n in ("GOPR0805.JPG", "G0010806.JPG"):
+        (tmp_path / n).write_bytes(b"jpg")
+    assert [p["number"] for p in list_photos(str(tmp_path))] == [805, 806]
+    assert gopro_number("GX020715.MP4") == 715 and gopro_number("notes.jpg") is None
+    res = Api("unused.log").scan(str(tmp_path))
+    assert [i["number"] for i in res["items"]] == [804, 807] and len(res["photos"]) == 2

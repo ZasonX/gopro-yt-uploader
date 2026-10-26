@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import config
-from .mp4meta import GpsPoint, Mp4Info, read_mp4
+from .mp4meta import GpsPoint, Mp4Info, read_mp4, read_video_dims
 
 log = logging.getLogger(__name__)
 
@@ -119,13 +119,16 @@ def _info_to_json(info: Mp4Info) -> dict:
         "camera_time": info.camera_time.isoformat() if info.camera_time else None,
         "duration": info.duration,
         "gps": [[g.t, g.lat, g.lon, g.utc.isoformat() if g.utc else None] for g in info.gps],
+        "dims": list(info.dims) if info.dims else None,
     }
 
 
 def _info_from_json(d: dict) -> Mp4Info:
+    dims = d.get("dims")  # absent in caches written before 2026-10-26
     return Mp4Info(_dt(d["camera_time"]), float(d["duration"]),
                    [GpsPoint(float(t), float(lat), float(lon), _dt(utc))
-                    for t, lat, lon, utc in d["gps"]])
+                    for t, lat, lon, utc in d["gps"]],
+                   tuple(dims) if dims else None)
 
 
 def list_videos(folder: str, recursive: bool = True) -> list[str]:
@@ -140,6 +143,32 @@ def list_videos(folder: str, recursive: bool = True) -> list[str]:
     return sorted(out)
 
 
+PHOTO_EXTS = {".jpg", ".jpeg", ".gpr"}
+_PHOTO = re.compile(r"^G(?:OPR|[A-Z0-9]\d{2})(\d{4})$", re.I)   # GOPR0805.JPG, burst G0010805.JPG
+
+
+def gopro_number(filename: str) -> int | None:
+    """The 4-digit file counter GoPro shares between photos and videos (GX010797 -> 797)."""
+    stem = os.path.splitext(filename)[0]
+    for rx in (_NEW, _OLD_FIRST, _OLD_CHAP, _PHOTO):
+        if m := rx.match(stem):
+            return int(m.group(m.lastindex))
+    return None
+
+
+def list_photos(folder: str, recursive: bool = True) -> list[dict]:
+    """GoPro photos in the folder: they use up numbers in the same counter as videos."""
+    out = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not d.startswith((".", "_merged"))]
+        for fn in files:
+            if os.path.splitext(fn)[1].lower() in PHOTO_EXTS and (n := gopro_number(fn)) is not None:
+                out.append({"folder": root, "number": n, "name": fn})
+        if not recursive:
+            break
+    return sorted(out, key=lambda p: (p["folder"], p["number"], p["name"]))
+
+
 def scan(folder: str, progress=None, recursive: bool = True) -> list[Recording]:
     paths = list_videos(folder, recursive)
     cache = ScanCache()
@@ -151,6 +180,12 @@ def scan(folder: str, progress=None, recursive: bool = True) -> list[Recording]:
         clip.info = cache.get(p, st.st_size, st.st_mtime)
         if clip.info is not None:
             hits += 1
+            if clip.info.dims is None:  # older cache entry: read just the header, not the GPS
+                try:
+                    clip.info.dims = read_video_dims(p)
+                    cache.put(p, st.st_size, st.st_mtime, clip.info)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("無法讀取畫面方向 %s: %s", p, e)
         else:
             try:
                 clip.info = read_mp4(p)

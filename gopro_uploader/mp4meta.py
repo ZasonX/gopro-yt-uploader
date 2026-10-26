@@ -38,6 +38,16 @@ class Mp4Info:
     camera_time: datetime | None   # naive, as written by the camera clock
     duration: float
     gps: list[GpsPoint] = field(default_factory=list)
+    # (width, height, rotation degrees) of the video track; None = not read yet (old cache)
+    dims: tuple[int, int, int] | None = None
+
+    @property
+    def vertical(self) -> bool:
+        """Shown upright taller than wide (camera held sideways writes a 90° rotation)."""
+        if not self.dims:
+            return False
+        w, h, rot = self.dims
+        return (h > w) != (rot in (90, 270))
 
     @property
     def first_fix(self) -> GpsPoint | None:
@@ -238,6 +248,30 @@ def _valid_fix(r) -> bool:
     return -90 <= lat <= 90 and -180 <= lon <= 180
 
 
+def _video_dims(moov: bytes) -> tuple[int, int, int] | None:
+    """(width, height, rotation) from the video track's tkhd."""
+    for typ, s, e in _children(moov, 0, len(moov)):
+        if typ != b"trak":
+            continue
+        hdlr = _find(moov, s, e, b"mdia", b"hdlr")
+        tkhd = _find(moov, s, e, b"tkhd")
+        if not hdlr or not tkhd or moov[hdlr[0] + 8:hdlr[0] + 12] != b"vide":
+            continue
+        end = tkhd[1]
+        w, h = struct.unpack_from(">II", moov, end - 8)
+        a, b = struct.unpack_from(">ii", moov, end - 44)   # first row of the 3x3 matrix
+        rot = {(0, 65536): 90, (0, -65536): 270, (-65536, 0): 180}.get((a, b), 0)
+        return w >> 16, h >> 16, rot
+    return None
+
+
+def read_video_dims(path: str) -> tuple[int, int, int] | None:
+    """Only the moov box: cheap, used to fill in old cache entries."""
+    with open(path, "rb") as f:
+        moov = _read_moov(f)
+    return _video_dims(moov) if moov else None
+
+
 # ---------------------------------------------------------------------- API
 
 def read_mp4(path: str) -> Mp4Info:
@@ -283,4 +317,4 @@ def read_mp4(path: str) -> Mp4Info:
                 if _valid_fix(r) and t > gps[-1].t:
                     gps.append(GpsPoint(t, r[0], r[1], r[2]))
             break
-        return Mp4Info(camera_time, duration, gps)
+        return Mp4Info(camera_time, duration, gps, _video_dims(moov))

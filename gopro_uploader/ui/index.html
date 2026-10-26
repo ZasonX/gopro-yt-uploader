@@ -121,6 +121,17 @@ a.btnlink:hover { filter: brightness(1.1); }
 .results small { color: var(--muted); display: block; }
 .hint { color: var(--muted); font-size: 12px; }
 .desc { white-space: pre-wrap; max-height: 8em; overflow: auto; }
+/* check results above the table: red = fix, yellow = heads-up, gray = info; click filters */
+.checks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.checks:empty { display: none; }
+.checks .chip { border-radius: 999px; padding: 2px 10px; font-size: 12px; border: 1px solid var(--line); background: var(--panel); }
+.checks .chip.red { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.checks .chip.yellow { color: var(--warn); border-color: var(--warn); }
+.checks .chip.gray { color: var(--muted); }
+.checks .chip.on { background: var(--sel); outline: 2px solid var(--accent2); }
+.checks .chip.static { cursor: default; }
+.checks .chip.clear { color: var(--accent2); }
+tr.gap td { padding: 2px 8px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--line) 25%, transparent); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .chip { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
 
@@ -185,6 +196,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
 
 <main>
   <div class="tablewrap">
+    <div id="checks" class="checks"></div>
     <table>
       <thead><tr>
         <th class="inc" title="打勾的錄影，會在按「開始上傳」時上傳。點這裡可以全選 / 全部取消">
@@ -362,6 +374,7 @@ function updateUpbar(it) {
 
 function setPlan(res) {
   items = res.items;
+  if (res.photos) photos = res.photos;
   for (const id of [...selected]) if (!items.find(i => i.id === id)) selected.delete(id);
   $("#offset").textContent = res.camera_offset_hours != null
     ? `相機時鐘比 UTC 快 ${res.camera_offset_hours} 小時（由 GPS 自動偵測）` : "";
@@ -387,10 +400,55 @@ function updateStatusCell(it) {
   summary();
 }
 
+// ------------------------------------------------------- check results (chips)
+const ON_YT = ["uploading", "merging", "uploaded", "partial"];
+const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for information
+  { key: "date", level: "red", label: "日期不確定", tip: "相機時鐘重設過，而且無法從前後錄影確定日期",
+    test: i => i.time_suspect && (i.date_uncertain || !i.date_guess) },
+  { key: "titledate", level: "red", label: "標題日期不符", tip: "手動打的標題日期跟拍攝日期不同",
+    test: i => i.title_date_mismatch && !ON_YT.includes(i.status) },
+  { key: "missing", level: "red", label: "YouTube 上已刪除", tip: "上傳過，但在 YouTube 上找不到了", test: i => i.status === "missing" },
+  { key: "error", level: "red", label: "上傳失敗", tip: "滑鼠移到狀態欄的 ⓘ 看原因", test: i => i.status === "error" },
+  { key: "short", level: "yellow", label: "會變成 Shorts", tip: "直式（相機直拿）而且 3 分鐘以內，YouTube 會歸到 Shorts",
+    test: i => i.short },
+  { key: "guess", level: "gray", label: "推測日期", tip: "相機時鐘重設過，日期依前後錄影推測，標題只放日期",
+    test: i => i.time_suspect && i.date_guess && !i.date_uncertain },
+  { key: "chapters", level: "gray", label: "有分段", tip: "GoPro 自動切開的長片，上傳前會合併成一支（需要同樣大小的暫存空間）",
+    test: i => i.files.length > 1 },
+  { key: "uploaded", level: "gray", label: "已上傳", tip: "", test: i => i.status === "uploaded" },
+];
+let filterKey = null, photos = [];
+function visibleItems() {  // the rows shown under the current filter chip
+  const test = filterKey && CHECKS.find(c => c.key === filterKey)?.test;
+  return test ? items.filter(test) : items;
+}
+function renderChecks() {
+  const box = $("#checks");
+  const chips = CHECKS.map(c => ({ ...c, n: items.filter(c.test).length })).filter(c => c.n);
+  if (filterKey && !chips.some(c => c.key === filterKey)) filterKey = null;
+  box.innerHTML = !items.length ? "" : (chips.map(c => `<button class="chip ${c.level} ${filterKey === c.key ? "on" : ""}" data-k="${c.key}"
+      title="${esc(c.tip)}${c.tip ? "。" : ""}點一下只顯示這些，再點一下顯示全部">${c.label} ${c.n}</button>`).join("")
+    + (photos.length ? `<span class="chip gray static" title="GoPro 的照片和影片共用編號，所以影片編號會跳號；照片不會上傳">照片 ${photos.length}</span>` : "")
+    + (filterKey ? `<button class="chip clear" data-k="">顯示全部 ×</button>` : "")) ;
+  box.querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
+    filterKey = b.dataset.k && filterKey !== b.dataset.k ? b.dataset.k : null; render();
+  });
+}
+function gapRow(prev, next) {  // numbers skipped between two neighbouring rows: photos, or nothing
+  if (prev?.number == null || next?.number == null || prev.folder !== next.folder || next.number <= prev.number + 1) return "";
+  const lo = prev.number + 1, hi = next.number - 1;
+  const ph = photos.filter(p => p.folder === prev.folder && p.number >= lo && p.number <= hi);
+  const nums = lo === hi ? String(lo).padStart(4, "0") : `${String(lo).padStart(4, "0")}～${String(hi).padStart(4, "0")}`;
+  const what = ph.length ? `${ph.length} 張照片（不上傳）` : "沒有檔案（可能刪掉了，或在別的資料夾）";
+  return `<tr class="gap"><td></td><td colspan="5" title="${esc(ph.map(p => p.name).join("\n"))}">${nums}：${what}</td></tr>`;
+}
+
 function render() {
   const tb = $("#rows");
   $("#empty").style.display = items.length ? "none" : "";
-  tb.innerHTML = items.map(it => `
+  renderChecks();
+  const shown = visibleItems();
+  tb.innerHTML = shown.map((it, k) => (filterKey ? "" : gapRow(shown[k - 1], it)) + `
     <tr class="row ${selected.has(it.id) ? "sel" : ""} ${it.status === "uploaded" ? "done" : ""}" data-id="${esc(it.id)}">
       <td class="inccell" title="打勾 = 按「開始上傳」時上傳"><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
       <td class="status">${statusHtml(it)}</td>
@@ -419,7 +477,8 @@ function summary() {
   const done = items.filter(i => i.status === "uploaded").length;
   $("#summary").textContent = items.length
     ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）` : "";
-  $("#chkAll").checked = items.length && items.every(i => i.include);
+  const vis = visibleItems();
+  $("#chkAll").checked = vis.length > 0 && vis.every(i => i.include);
 }
 function refreshButtons() {
   const has = items.length > 0;
@@ -441,7 +500,7 @@ $("#rows").addEventListener("click", e => {
     if (!box.disabled) { box.checked = !box.checked; box.dispatchEvent(new Event("change", { bubbles: true })); }
     return;
   }
-  const id = tr.dataset.id, ids = items.map(i => i.id);
+  const id = tr.dataset.id, ids = visibleItems().map(i => i.id);
   if (e.shiftKey && lastClicked) {
     const [a, b] = [ids.indexOf(lastClicked), ids.indexOf(id)].sort((x, y) => x - y);
     if (!e.ctrlKey) selected.clear();
@@ -481,7 +540,8 @@ $("#rows").addEventListener("contextmenu", e => {
   m.style.top = Math.min(e.clientY, innerHeight - r.height - 8) + "px";
 });
 $("#chkAll").addEventListener("change", async e => {
-  setPlan(await call("edit", items.filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));
+  // only the rows shown under the current filter chip
+  setPlan(await call("edit", visibleItems().filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));
 });
 
 // ------------------------------------------------------------------------- map
@@ -578,10 +638,11 @@ function selectItem(id) {
   drawMap(true); renderDetail();
 }
 function step(delta) {
-  if (!items.length) return;
-  const i = items.findIndex(x => selected.has(x.id));
-  const j = i < 0 ? 0 : Math.min(Math.max(i + delta, 0), items.length - 1);
-  selectItem(items[j].id);
+  const list = visibleItems();
+  if (!list.length) return;
+  const i = list.findIndex(x => selected.has(x.id));
+  const j = i < 0 ? 0 : Math.min(Math.max(i + delta, 0), list.length - 1);
+  selectItem(list[j].id);
 }
 function renderNav() {
   const nav = $("#nav"), sel = items.filter(i => selected.has(i.id));
@@ -589,15 +650,15 @@ function renderNav() {
     nav.innerHTML = sel.length ? `<span class="where">已選 ${sel.length} 段錄影，下面的修改會套用到全部</span>` : "";
     return;
   }
-  const it = sel[0], i = items.indexOf(it), onYT = ["uploading", "merging", "uploaded", "partial"].includes(it.status);
+  const vis = visibleItems(), it = sel[0], i = vis.indexOf(it), onYT = ["uploading", "merging", "uploaded", "partial"].includes(it.status);
   nav.innerHTML = `
     <button id="navPrev" ${i === 0 ? "disabled" : ""} title="鍵盤 ↑">◀ 上一支</button>
-    <span class="where">第 ${i + 1} / ${items.length} 段 · ${fmtDur(it.duration)} · ${fmtSize(it.size)}
+    <span class="where">${filterKey ? "（篩選中）" : ""}第 ${i + 1} / ${vis.length} 段 · ${fmtDur(it.duration)} · ${fmtSize(it.size)}
       <small>${esc(it.files.join(" + "))}</small></span>
     ${onYT ? `<span class="inc on">✓ ${STATUS[it.status]}</span>`
       : `<label class="inc ${it.include ? "on" : ""}" title="打勾的錄影，會在按「開始上傳」時上傳">
            <input type="checkbox" id="navInc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}>要上傳</label>`}
-    <button id="navNext" ${i === items.length - 1 ? "disabled" : ""} title="鍵盤 ↓">下一支 ▶</button>`;
+    <button id="navNext" ${i === vis.length - 1 ? "disabled" : ""} title="鍵盤 ↓">下一支 ▶</button>`;
   $("#navPrev").onclick = () => step(-1);
   $("#navNext").onclick = () => step(1);
   const inc = $("#navInc");

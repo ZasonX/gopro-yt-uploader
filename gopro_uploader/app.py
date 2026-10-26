@@ -14,7 +14,7 @@ import webview
 from . import config, geocode, merge, preview, youtube
 from .config import TITLE_FORMATS, Settings
 from .planner import build_plan, detect_camera_offset, retime_title
-from .scanner import scan
+from .scanner import list_photos, scan
 from .store import Edits, Store, fingerprint, setup_logging
 from .store import export_logs as store_export_logs
 
@@ -34,6 +34,7 @@ class Api:
         self._store = Store()
         self._edits = Edits()
         self._recs = []
+        self._photos: list[dict] = []
         self._overrides: dict[str, dict] = {}
         self._fps: dict[str, str] = {}  # recording id -> fingerprint used in edits.json
         self._items: list[dict] = []
@@ -67,6 +68,7 @@ class Api:
             self._attach_youtube(it)
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items, "recent_places": self._settings.recent_places,
+                "photos": self._photos,
                 "camera_offset_hours": round(off.total_seconds() / 3600, 2) if off else None}
 
     # ------------------------------------------------- YouTube's current data
@@ -242,6 +244,7 @@ class Api:
         self._settings.save()
         self._say(f"掃描 {folder} …")
         self._recs = scan(folder, progress=lambda i, n, name: self._emit("scan", i=i, n=n, name=name))
+        self._photos = list_photos(folder)  # they use up GoPro file numbers: explains gaps
         self._fps = {r.key: fingerprint({"files": [c.name for c in r.clips],
                                          "size": sum(c.size for c in r.clips)})
                      for r in self._recs}
