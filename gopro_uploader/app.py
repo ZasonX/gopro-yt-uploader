@@ -297,6 +297,17 @@ class Api:
             self._retime_titles(ids)
         return self._replan()
 
+    def set_dates(self, ids: list[str], date: str):
+        """Set the day of several recordings at once; one that has a real time keeps it."""
+        by_id = {it["id"]: it for it in self._items}
+        for i in ids:
+            it = by_id.get(i)
+            if not it or self._locked(i):
+                continue
+            lt = f"{date}T{it['local'][11:16]}" if it["time_known"] else date
+            self.edit([i], {"local_time": lt})
+        return self._replan()
+
     def fix_title_dates(self, ids: list[str]):
         self._retime_titles([i for i in ids if not self._locked(i)])
         return self._replan()
@@ -314,7 +325,7 @@ class Api:
             ov, it = self._overrides.get(i, {}), by_id.get(i)
             if not it or "title" not in ov:
                 continue
-            new = retime_title(ov["title"], datetime.fromisoformat(it["local"]))
+            new = retime_title(ov["title"], datetime.fromisoformat(it["local"]), it["time_known"])
             if new != ov["title"]:
                 ov["title"] = new
                 self._save_edits(i)

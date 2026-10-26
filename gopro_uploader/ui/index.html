@@ -400,8 +400,10 @@ function render() {
           ${onYT ? "disabled" : ""}>`;
       })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}${["uploaded", "partial"].includes(it.status) && !it.yt
         ? ' <span class="tag suspect" title="還沒從 YouTube 讀過這支影片的資料，這裡顯示的是上傳當時的標題；在 Studio 改過的話會不一樣。登入 YouTube 後重新掃描就會讀取。">⚠ 上傳時的標題</span>' : ""}</span></td>
-      <td>${it.time_suspect ? '<span class="tag suspect" title="好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。建議在右側填入正確時間；不改也可以上傳">⚠ 時間可疑</span>'
-        : `<span class="src" title="拍攝時間的來源">${TSRC[it.time_source] || it.time_source}</span>`}</td>
+      <td>${it.time_suspect && it.date_uncertain ? `<span class="tag suspect" title="相機時鐘重設過；前後錄影的日期不同，先用 ${esc(it.date_guess)}，請確認">⚠ 日期不確定</span>`
+        : it.time_suspect && it.date_guess ? `<span class="src" title="相機時鐘重設過，檔案裡沒有真實時間；日期是依前後的錄影推測的，標題只放日期">推測日期</span>`
+        : it.time_suspect ? '<span class="tag suspect" title="相機時鐘重設過，而且前後沒有可以參考的錄影；請在右側填日期">⚠ 時間可疑</span>'
+        : `<span class="src" title="拍攝時間的來源">${it.time_known ? (TSRC[it.time_source] || it.time_source) : "只有日期"}</span>`}</td>
       <td>${fmtDur(it.duration)}</td>
       ${it.yt && "yt_has_location" in it  // uploaded: show YouTube's location, not the local plan
         ? `<td class="place" title="YouTube 上的地點">${it.yt_has_location
@@ -597,7 +599,10 @@ function renderDetail() {
   d.innerHTML = `
     ${locked ? `<div class="hint warn">${one ? "這段錄影" : "已選的錄影中有些"}${one?.status === "uploading" || one?.status === "merging" ? "正在上傳" : "已經上傳到 YouTube"}，這裡的修改不會影響 YouTube 上的影片，所以先鎖住了。要改請到 YouTube Studio。</div>` : ""}
     ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
-    ${one?.time_suspect ? '<div class="hint warn">⚠ 好幾段錄影的相機時間完全相同，相機時鐘可能跑掉了。看完預覽後請填入正確的拍攝時間。</div>' : ""}
+    ${one?.time_suspect ? `<div class="hint ${one.date_uncertain || !one.date_guess ? "warn" : ""}">相機時鐘重設過，檔案裡沒有真實時間。${
+        one.date_uncertain ? `前後錄影的日期不同，先用 ${esc(one.date_guess)}，請確認日期。`
+        : one.date_guess ? `日期是依前後的錄影推測的（${esc(one.date_guess)}），標題只放日期。`
+        : "前後沒有可以參考的錄影，請填日期。"}影片裡有拍到時鐘的話，可以填時間。</div>` : ""}
     ${locked ? "" : '<div class="hint">改完按 Enter 或點別的地方就會自動儲存。</div>'}
     ${one ? `<section class="grp">${head("title", "標題")}
       <input id="titleInput" value="${esc(one.title)}">
@@ -605,8 +610,13 @@ function renderDetail() {
         <button class="mini" id="btnFixDate">只把標題開頭的日期改成 ${esc(one.local.slice(0, 10))}</button></div>` : ""}
     </section>` : ""}
     <section class="grp">${head("time", "拍攝時間")}
-      ${one ? `<label class="f"><span>日期時間 <span class="hint">${TSRC[one.time_source] || one.time_source}</span></span>
-        <input id="timeInput" type="datetime-local" value="${esc(one.local.slice(0, 16).replace(" ", "T"))}">
+      <label class="f"><span>日期${one ? ` <span class="hint">${one.time_suspect ? (one.date_guess ? "推測" : "") : TSRC[one.time_source] || ""}</span>` : ""}</span>
+        <input id="dateInput" type="date" value="${one ? esc(one.local.slice(0, 10)) : ""}"
+          title="${one ? "" : "套用到全部已選的錄影；有時間的保留原本的時間"}">
+      </label>
+      ${one ? `<label class="f"><span>時間 <span class="hint">24 小時制，可留空</span></span>
+        <input id="clockInput" placeholder="例如 15:16（不知道就留空，標題只放日期）" inputmode="numeric"
+          value="${one.time_known ? esc(one.local.slice(11, 16)) : ""}">
       </label>` : ""}
       <label class="f"><span>時區${one ? ` <span class="hint">${one.tz_source === "file" ? "自動" : one.tz_source === "manual" ? "手動" : "預設"}</span>` : ""}</span>
         <select id="tzInput">
@@ -649,7 +659,20 @@ function renderDetail() {
   onCommit($("#titleInput"), v => save({ title: v || null }));
   const fix = $("#btnFixDate");
   if (fix) fix.onclick = async () => setPlan(await call("fix_title_dates", ids));
-  onCommit($("#timeInput"), v => v && save({ local_time: v }));
+  // date + 24h clock; an empty clock means "date only"
+  const clockOk = v => !v || /^([01]?\d|2[0-3]):?[0-5]\d$/.test(v);
+  const hhmm = v => v.includes(":") ? v.padStart(5, "0") : v.padStart(4, "0").replace(/(\d\d)(\d\d)/, "$1:$2");
+  const saveTime = (date, clock) => {
+    if (!date) return;
+    if (!clockOk(clock)) { log(`時間「${clock}」看不懂，請用 24 小時制，例如 15:16`, "error"); $("#clockInput")?.focus(); return; }
+    return save({ local_time: clock ? `${date}T${hhmm(clock)}` : date });
+  };
+  if (one) {
+    onCommit($("#dateInput"), v => saveTime(v, $("#clockInput").value.trim()));
+    onCommit($("#clockInput"), v => saveTime($("#dateInput").value, v));
+  } else {  // several rows: set the date, keep each row's own time if it has one
+    onCommit($("#dateInput"), async v => v && setPlan(await call("set_dates", ids, v)));
+  }
   onCommit($("#placeInput"), v => save({ place: v || null }));
   $("#tzInput").onchange = e => save({ tz: e.target.value || null });
   d.querySelectorAll("[data-reset]").forEach(b => b.onclick = () => {

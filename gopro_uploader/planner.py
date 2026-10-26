@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .scanner import Recording
+from .scanner import Recording, group_key
 
 NEARBY_WINDOW = timedelta(hours=3)
 
@@ -104,9 +104,14 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             zone, zsrc = _zone_for(off, utc, (home_tz, trip_tz)), "file"
         else:
             zone, zsrc = trip_tz, "default"
-        if ov.get("local_time"):  # "YYYY-MM-DDTHH:MM" in the recording's zone, set by the user
-            utc = datetime.fromisoformat(ov["local_time"]).replace(tzinfo=zone).astimezone(timezone.utc)
-            tsrc = "manual"
+        suspect = tsrc not in ("gps",) and cam_time in shared
+        time_known = not suspect
+        if ov.get("local_time"):  # "YYYY-MM-DDTHH:MM", or "YYYY-MM-DD" = date only, in the recording's zone
+            lt = ov["local_time"]
+            time_known = len(lt) > 10
+            utc = datetime.fromisoformat(lt if time_known else lt + "T12:00").replace(
+                tzinfo=zone).astimezone(timezone.utc)
+            tsrc, suspect = "manual", False
         local = utc.astimezone(zone)
         track = [[p.lat, p.lon] for c in rec.clips if c.info for p in c.info.gps]
         names = [c.name for c in rec.clips]
@@ -125,7 +130,11 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             "tz_label": "" if local.utcoffset() == local.astimezone(home_tz).utcoffset()
                         else local.strftime("%Z"),
             "time_source": tsrc,
-            "time_suspect": tsrc not in ("gps", "manual") and cam_time in shared,
+            # the camera clock was reset: no real time in the file; the date is guessed below
+            "time_suspect": suspect,
+            "time_known": time_known,
+            "date_guess": "",           # filled for suspects by _guess_dates
+            "date_uncertain": False,
             "lat": track[0][0] if track else None,
             "lon": track[0][1] if track else None,
             "loc_source": "gps" if track else None,
@@ -138,6 +147,7 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
         }
         items.append(item)
 
+    _guess_dates(items)
     _fill_nearby_locations(items)
 
     for item in items:
@@ -150,9 +160,12 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
         if "place" not in ov and item["lat"] is not None and place_lookup:
             item["place"] = place_lookup(item["lat"], item["lon"]) or ""
         local = datetime.fromisoformat(item["local"])
-        default_title = local.strftime(settings.title_format)
-        if item["tz_label"]:
-            default_title += " " + item["tz_label"]
+        if item["time_known"]:
+            default_title = local.strftime(settings.title_format)
+            if item["tz_label"]:
+                default_title += " " + item["tz_label"]
+        else:  # no real time: the date alone, e.g. "2025-04-04" (no zone label either)
+            default_title = local.strftime(date_part(settings.title_format))
         item["title"] = ov.get("title") or default_title
         item["title_locked"] = "title" in ov
         item["title_date_mismatch"] = item["title_locked"] and _date_mismatch(item["title"], local)
@@ -171,6 +184,45 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
     return items
 
 
+def date_part(fmt: str) -> str:
+    """The date-only part of a title format: "%Y-%m-%d %H:%M" -> "%Y-%m-%d"."""
+    i = fmt.find("%H")
+    return fmt[:i].rstrip(" T_-") if i > 0 else fmt
+
+
+def _gopro_number(item) -> tuple[str, str]:
+    """Shooting order within a folder: GoPro numbers files sequentially (GX010797 -> 0797)."""
+    key, _ = group_key(item["files"][0])
+    return item["folder"], re.sub(r"\D", "", key[-4:]) or key
+
+
+def _guess_dates(items):
+    """Clock-reset recordings get the date of the nearest good recordings before / after.
+
+    By file number, the previous and next recording with a real time bound it. Both on the
+    same day -> that day. Different days (e.g. across midnight) -> the later day, flagged.
+    Only one side -> its day. The time stays unknown, so the title shows the date alone.
+    """
+    order = sorted(items, key=_gopro_number)
+    good = [i for i, it in enumerate(order) if not it["time_suspect"]]
+    for i, it in enumerate(order):
+        if not it["time_suspect"]:
+            continue
+        prev = next((order[j] for j in reversed(good) if j < i and order[j]["folder"] == it["folder"]), None)
+        nxt = next((order[j] for j in good if j > i and order[j]["folder"] == it["folder"]), None)
+        days = [x["local"][:10] for x in (prev, nxt) if x]
+        if not days:
+            continue  # nothing to go by: keep the camera's date, still flagged as suspect
+        day = days[-1]
+        it["date_guess"] = day
+        it["date_uncertain"] = len(set(days)) > 1
+        # midday of that day, in the recording's own offset (only the date is meaningful)
+        offset = datetime.fromisoformat(it["local"]) - datetime.fromisoformat(it["utc"]).replace(tzinfo=None)
+        new_local = datetime.fromisoformat(f"{day}T12:00:00")
+        it["local"] = new_local.strftime("%Y-%m-%d %H:%M:%S")
+        it["utc"] = (new_local - offset).replace(tzinfo=timezone.utc).isoformat()
+
+
 _DATE_IN_TITLE = re.compile(r"(\d{4})\s*[-/年.]?\s*(\d{1,2})\s*[-/月.]?\s*(\d{1,2})")
 
 
@@ -179,18 +231,19 @@ _LEADING_DATE = re.compile(
     r"(?P<time>\s+\d{1,2}:\d{2})?")
 
 
-def retime_title(title: str, local: datetime) -> str:
+def retime_title(title: str, local: datetime, with_time: bool = True) -> str:
     """Put the recording's date (and time, if the title had one) at the start of a typed title.
 
     "2022-05-25 走到出口" + 2025-04-04 13:10 -> "2025-04-04 走到出口";
-    the user's own words after the date are never touched.
+    with_time=False (time unknown) drops a time the title had: "2022-05-25 01:10 X" -> "2025-04-04 X".
+    The user's own words after the date are never touched.
     """
     m = _LEADING_DATE.match(title)
     if not m:
         return title
     pad = lambda v, src: f"{v:02d}" if len(src) == 2 else str(v)  # noqa: E731 - keep their style
     new = f"{local.year}{m['s1']}{pad(local.month, m['m'])}{m['s2']}{pad(local.day, m['d'])}{m['s3']}"
-    if m["time"]:
+    if m["time"] and with_time:
         new += m["time"][:len(m["time"]) - len(m["time"].lstrip())] + local.strftime("%H:%M")
     return new + title[m.end():]
 

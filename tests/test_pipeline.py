@@ -562,3 +562,53 @@ def test_only_scanned_files_can_be_opened_or_revealed(tmp_path, monkeypatch):
     assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GX020001.MP4'))}"]]
     assert api.reveal_file(key, 5) is False and api.reveal_file("not-a-key") is False
     assert api.open_original(str(tmp_path / "GX010001.MP4")) is False  # a path is not an id
+
+
+def test_clock_reset_clips_get_the_neighbours_date_and_a_date_only_title(tmp_path):
+    reset = datetime(2022, 5, 24, 17, 10, 32)
+    for n in (797, 798, 799):
+        make_mp4(tmp_path / f"GX010{n}.MP4", reset, 4.0, [])
+    _gopro_clip(tmp_path / "GX010827.MP4", datetime(2025, 4, 4, 8, 33, 21), 10, 8)   # good clock
+    recs = scan(str(tmp_path))
+    items = {i["files"][0]: i for i in build_plan(recs, config.Settings(), {})}
+    for n in (797, 798, 799):
+        it = items[f"GX010{n}.MP4"]
+        assert it["time_suspect"] and it["date_guess"] == "2025-04-04" and not it["date_uncertain"]
+        assert not it["time_known"] and it["recording_date"] == "2025-04-04T00:00:00Z"
+    assert items["GX010798.MP4"]["title"].startswith("2025-04-04") and ":" not in items["GX010798.MP4"]["title"]
+    assert items["GX010827.MP4"]["title"] == "2025-04-04 16:33"
+
+    # a typed title on a guessed day keeps its words, the date comes from the guess
+    key = items["GX010798.MP4"]["id"]
+    it = build_plan(recs, config.Settings(), {key: {"title": "2025-04-04 走到出口"}})
+    assert {i["files"][0]: i for i in it}["GX010798.MP4"]["title"] == "2025-04-04 走到出口"
+
+
+def test_guess_across_midnight_is_flagged(tmp_path):
+    _gopro_clip(tmp_path / "GX010100.MP4", datetime(2025, 4, 5, 14, 50), 10, 9)  # 23:50 JST 4/5
+    make_mp4(tmp_path / "GX010101.MP4", datetime(2023, 1, 1), 4.0, [])
+    make_mp4(tmp_path / "GX010102.MP4", datetime(2023, 1, 1), 4.0, [])
+    _gopro_clip(tmp_path / "GX010103.MP4", datetime(2025, 4, 5, 15, 20), 10, 9)  # 00:20 JST 4/6
+    items = {i["files"][0]: i for i in build_plan(scan(str(tmp_path)), config.Settings(), {})}
+    mid = items["GX010101.MP4"]
+    assert mid["date_guess"] == "2025-04-06" and mid["date_uncertain"]
+
+
+def test_date_only_time_and_batch_dates(tmp_path):
+    from gopro_uploader.app import Api
+    from gopro_uploader.planner import date_part, retime_title
+    assert date_part("%Y-%m-%d %H:%M") == "%Y-%m-%d" and date_part("%Y年%m月%d日 %H:%M") == "%Y年%m月%d日"
+    assert retime_title("2022-05-25 01:10 走到出口", datetime(2025, 4, 4), with_time=False) == "2025-04-04 走到出口"
+
+    make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
+    make_mp4(tmp_path / "GX010002.MP4", CAM.replace(minute=50), 4.0, [])
+    api = Api("unused.log")
+    a, b = api.scan(str(tmp_path))["items"]
+    it = api.edit([a["id"]], {"local_time": "2025-04-04"})["items"][0]   # date only
+    assert not it["time_known"] and it["title"] == "2025-04-04" and it["recording_date"] == "2025-04-04T00:00:00Z"
+    it = api.edit([a["id"]], {"local_time": "2025-04-04T15:16"})["items"][0]
+    assert it["time_known"] and it["title"] == "2025-04-04 15:16 JST"
+
+    items = {i["id"]: i for i in api.set_dates([a["id"], b["id"]], "2025-04-07")["items"]}
+    assert items[a["id"]]["local"].startswith("2025-04-07 15:16")   # kept its time
+    assert items[b["id"]]["local"].startswith("2025-04-07 14:50")
