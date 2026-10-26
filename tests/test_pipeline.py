@@ -670,3 +670,16 @@ def test_photos_explain_number_gaps(tmp_path):
     assert gopro_number("GX020715.MP4") == 715 and gopro_number("notes.jpg") is None
     res = Api("unused.log").scan(str(tmp_path))
     assert [i["number"] for i in res["items"]] == [804, 807] and len(res["photos"]) == 2
+
+
+def test_window_opens_where_it_was_if_that_screen_is_still_there():
+    from gopro_uploader.app import window_geometry
+    screens = [(0, 0, 1920, 1000)]
+    g = window_geometry({}, screens)  # first run: centred, fits the screen
+    assert (g["width"], g["height"]) == (1440, 900) and g["x"] == (1920 - 1440) // 2
+    g = window_geometry({"x": 100, "y": 50, "width": 1200, "height": 800, "maximized": True}, screens)
+    assert (g["x"], g["y"], g["width"], g["height"], g["maximized"]) == (100, 50, 1200, 800, True)
+    g = window_geometry({"x": 3000, "y": 50, "width": 1200, "height": 800}, screens)  # unplugged monitor
+    assert g["x"] == (1920 - 1200) // 2 and g["y"] == (1000 - 800) // 2
+    g = window_geometry({}, [(0, 0, 1280, 720)])  # small screen: shrink to fit (but not under the minimum)
+    assert g["width"] == 1280 and g["height"] == 720

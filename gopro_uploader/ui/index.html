@@ -164,6 +164,13 @@ td.title .t.mismatch { color: var(--accent); }
 .actions .spacer { flex: 1; }
 #log { height: 110px; overflow: auto; font-family: Consolas, monospace; font-size: 12px; padding: 6px 14px;
        border-top: 1px solid var(--line); white-space: pre-wrap; color: var(--muted); }
+/* collapsed: just the newest line; click the bar to see everything */
+#logbar { display: flex; gap: 8px; align-items: center; padding: 5px 14px; border-top: 1px solid var(--line);
+          font: 12px Consolas, monospace; color: var(--muted); cursor: pointer; }
+#logbar .last { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#logbar .last.error { color: var(--accent); }
+#logbar .tog { font-family: inherit; white-space: nowrap; color: var(--accent2); }
+footer:not(.logopen) #log { display: none; }
 #log .error { color: var(--accent); }
 #log a { color: var(--accent2); }
 
@@ -244,6 +251,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <button id="btnCancel" disabled>停止</button>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
   </div>
+  <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
   <div id="log"></div>
 </footer>
 
@@ -344,7 +352,19 @@ function log(msg, level) {
   if (level === "error") line.className = "error";
   line.innerHTML = esc(new Date().toLocaleTimeString() + "  " + msg).replace(/(https:\/\/youtu\.be\/[\w-]+)/g, '<a href="$1" target="_blank">$1</a>');
   el.appendChild(line); el.scrollTop = el.scrollHeight;
+  const last = $("#logbar .last");  // the collapsed bar shows the newest line
+  last.innerHTML = line.innerHTML; last.className = "last " + (level === "error" ? "error" : "");
+  if (level === "error") setLogOpen(true);  // problems open the full log by themselves
 }
+function setLogOpen(open) {
+  document.querySelector("footer").classList.toggle("logopen", open);
+  $("#logbar .tog").textContent = open ? "收合 ▾" : "紀錄 ▴";
+  if (open) $("#log").scrollTop = $("#log").scrollHeight;
+}
+$("#logbar").addEventListener("click", e => {
+  if (e.target.closest("a")) return;
+  setLogOpen(!document.querySelector("footer").classList.contains("logopen"));
+});
 function busy(text) { $("#busy").classList.toggle("on", !!text); if (text) $("#busyText").textContent = text; }
 async function call(name, ...args) {
   try { return await api[name](...args); }

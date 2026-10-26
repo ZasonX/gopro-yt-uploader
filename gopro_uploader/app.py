@@ -590,10 +590,59 @@ class Api:
                     log.warning("could not delete merged file: %s", e)
 
 
+def window_geometry(saved: dict, screens: list) -> dict:
+    """Where to open: the last position if it is still on a connected screen, else centred.
+
+    screens: [(x, y, width, height)]; the first one is the primary screen.
+    """
+    w = max(int(saved.get("width") or 1440), 1000)
+    h = max(int(saved.get("height") or 900), 650)
+    x, y = saved.get("x"), saved.get("y")
+    if x is not None and y is not None:
+        cx, cy = x + w // 2, y + 40  # the title bar must be reachable
+        if any(sx <= cx < sx + sw and sy <= cy < sy + sh for sx, sy, sw, sh in screens):
+            return {"x": int(x), "y": int(y), "width": w, "height": h,
+                    "maximized": bool(saved.get("maximized"))}
+    sx, sy, sw, sh = screens[0] if screens else (0, 0, 1920, 1080)
+    w, h = min(w, sw), min(h, sh)
+    return {"x": sx + (sw - w) // 2, "y": sy + (sh - h) // 2, "width": w, "height": h,
+            "maximized": bool(saved.get("maximized"))}
+
+
+def _remember_window(window, settings: Settings):
+    geo = dict(settings.window)
+
+    def moved(x, y):
+        if not geo.get("maximized"):
+            geo.update(x=x, y=y)
+
+    def resized(width, height):
+        if not geo.get("maximized"):
+            geo.update(width=width, height=height)
+
+    def closing():
+        settings.window = geo
+        settings.save()
+
+    window.events.moved += moved
+    window.events.resized += resized
+    window.events.maximized += lambda: geo.update(maximized=True)
+    window.events.restored += lambda: geo.update(maximized=False)
+    window.events.closing += closing
+
+
 def main():
     log_file = setup_logging()
     api = Api(log_file)
+    try:
+        screens = [(s.x, s.y, s.width, s.height) for s in webview.screens]
+    except Exception:  # noqa: BLE001 - no screen info: just centre on a default size
+        screens = []
+    geo = window_geometry(api._settings.window, screens)
     window = webview.create_window("GoPro → YouTube 上傳工具", _resource("ui", "index.html"),
-                                   js_api=api, width=1440, height=900, min_size=(1000, 650))
+                                   js_api=api, width=geo["width"], height=geo["height"],
+                                   x=geo["x"], y=geo["y"], maximized=geo["maximized"],
+                                   min_size=(1000, 650))
     api._window = window
+    _remember_window(window, api._settings)
     webview.start(http_server=True, debug="--debug" in sys.argv)

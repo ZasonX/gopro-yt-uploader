@@ -52,6 +52,8 @@ class Settings:
     delete_merged: bool = True
     geocode_lang: str = "zh-TW,ja"
     last_folder: str = ""
+    # last window position / size: {"x", "y", "width", "height", "maximized"}
+    window: dict = field(default_factory=dict)
     # [{"place", "lat", "lon"}], newest first: quick picks under the place search
     recent_places: list[dict] = field(default_factory=list)
 
