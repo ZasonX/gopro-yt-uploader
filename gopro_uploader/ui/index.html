@@ -752,7 +752,7 @@ function renderNav() {
     const can = sel.filter(i => !ON_YT.includes(i.status)), all = can.length > 0 && can.every(i => i.include);
     nav.innerHTML = `<span class="where">已選 ${sel.length} 段錄影，下面的修改會套用到全部</span>
       ${can.length ? `<label class="inc ${all ? "on" : ""}" title="把已選的錄影全部打勾 / 全部取消">
-        <input type="checkbox" id="navInc" ${all ? "checked" : ""} ${uploading ? "disabled" : ""}>全部要上傳（${can.filter(i => i.include).length} / ${can.length}）</label>` : ""}`;
+        <input type="checkbox" id="navInc" ${all ? "checked" : ""} ${uploading ? "disabled" : ""}>這 ${can.length} 段都要上傳${all ? "" : `（目前勾了 ${can.filter(i => i.include).length} 段）`}</label>` : ""}`;
     const inc = $("#navInc");
     if (inc) inc.onchange = async () => setPlan(await call("edit", can.map(i => i.id), { include: inc.checked }));
     return;
