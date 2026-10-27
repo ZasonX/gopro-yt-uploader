@@ -477,6 +477,7 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.time_suspect && i.date_guess && !i.date_uncertain },
   { key: "chapters", level: "gray", label: "有分段", tip: "GoPro 自動切開的長片，上傳前會合併成一支（需要同樣大小的暫存空間）",
     test: i => i.files.length > 1 },
+  { key: "notup", level: "gray", label: "未上傳", tip: "還沒傳到 YouTube 的錄影", test: i => i.status !== "uploaded" },
   { key: "uploaded", level: "gray", label: "已上傳", tip: "", test: i => i.status === "uploaded" },
 ];
 let filterKey = null, photos = [];
