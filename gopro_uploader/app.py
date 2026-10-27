@@ -24,6 +24,7 @@ from .store import export_logs as store_export_logs
 log = logging.getLogger("app")
 
 WINDOW_TITLE = "GoPro → YouTube 上傳工具"
+MAX_PARALLEL = 8  # HDD reads and YouTube's per-account limits are unknown beyond this
 MAX_PARKED = 6  # uploads that may wait for their last chunk on top of settings.parallel_uploads
 
 
@@ -586,7 +587,7 @@ class Api:
         return self._stop_after
 
     def set_parallel(self, n):
-        self._settings.parallel_uploads = max(1, min(4, int(n)))
+        self._settings.parallel_uploads = max(1, min(MAX_PARALLEL, int(n)))
         self._settings.save()
         return self._settings.parallel_uploads
 
@@ -610,7 +611,7 @@ class Api:
             self._emit("done", msg=f"無法開始上傳：{e}", level="error")
             return
 
-        width = max(1, min(4, int(s.parallel_uploads or 1)))
+        width = max(1, min(MAX_PARALLEL, int(s.parallel_uploads or 1)))
         self._say(f"開始上傳 {len(todo)} 段，同時傳 {width} 支")
         self._sent, self._batch_bytes = {}, sum(i["size"] for i in todo) or 1
         self._taskbar.progress(0)
