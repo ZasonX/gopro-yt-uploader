@@ -203,23 +203,45 @@ def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def upload(yt, path: str, body: dict, progress=None, cancel=None) -> str:
+def service_copy(yt):
+    """A separate service object for another upload thread (httplib2 is not thread-safe)."""
+    return build("youtube", "v3", credentials=yt._http.credentials, cache_discovery=False)
+
+
+def upload(yt, path: str, body: dict, progress=None, cancel=None,
+           resume_uri: str | None = None, on_session=None) -> str:
+    """Resumable upload. on_session(uri) gets the upload session URI once YouTube has opened it;
+    passing it back as resume_uri (even after a restart, for about a week) continues where it
+    stopped instead of sending the whole file again."""
+    if resume_uri:
+        try:
+            return _upload(yt, path, body, progress, cancel, resume_uri, on_session)
+        except HttpError as e:
+            if e.resp.status not in (400, 404, 410):
+                raise
+            log.warning("could not resume (session gone?), starting over: %s", e)
     try:
-        return _upload(yt, path, body, progress, cancel)
+        return _upload(yt, path, body, progress, cancel, None, on_session)
     except HttpError as e:
         # If the API ever rejects the paid-promotion part, it fails before any
         # bytes are sent; retry without it (YouTube defaults it to "no").
         if e.resp.status == 400 and "paidProductPlacementDetails" in body:
             log.warning("retrying without paidProductPlacementDetails: %s", e)
             body = {k: v for k, v in body.items() if k != "paidProductPlacementDetails"}
-            return _upload(yt, path, body, progress, cancel)
+            return _upload(yt, path, body, progress, cancel, None, on_session)
         raise
 
 
-def _upload(yt, path, body, progress, cancel) -> str:
+def _upload(yt, path, body, progress, cancel, resume_uri=None, on_session=None) -> str:
     parts = ",".join(body.keys())
     media = MediaFileUpload(path, mimetype="video/*", chunksize=CHUNK, resumable=True)
     req = yt.videos().insert(part=parts, body=body, media_body=media, notifySubscribers=False)
+    if resume_uri:
+        # googleapiclient's own recovery path: ask the server how much it already has
+        # ("Content-Range: bytes */size"), then carry on from there
+        req.resumable_uri = resume_uri
+        req._in_error_state = True
+    told = bool(resume_uri)
     response, retry = None, 0
     while response is None:
         if cancel and cancel():
@@ -227,6 +249,9 @@ def _upload(yt, path, body, progress, cancel) -> str:
         try:
             status, response = req.next_chunk()
             retry = 0
+            if not told and req.resumable_uri and on_session:
+                on_session(req.resumable_uri)
+                told = True
             if status and progress:
                 progress(status.resumable_progress, status.total_size)
         except (HttpError, RefreshError) as e:

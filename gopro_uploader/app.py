@@ -1,12 +1,15 @@
 """Desktop window (pywebview) and the Python API exposed to the HTML UI."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import subprocess
 import sys
 import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 
 import webview
@@ -45,9 +48,10 @@ class Api:
         self._stop_after = False  # finish the current video, then stop
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
-        self._uploading_id: str | None = None
+        self._uploading_ids: set[str] = set()  # several upload at once (settings.parallel_uploads)
         self._taskbar = taskbar.Taskbar(WINDOW_TITLE)
-        self._batch = (0, 1)
+        self._sent: dict[str, float] = {}  # taskbar: recording id -> bytes sent; plus the batch total
+        self._batch_bytes = 1
         self._told_signed_out = False
 
     # ------------------------------------------------------------ helpers
@@ -68,7 +72,7 @@ class Api:
                                  store_lookup=self._store.lookup,
                                  place_lookup=self._place_lookup)
         for it in self._items:  # "uploading" lives only in memory, not in state.json
-            if it["id"] == self._uploading_id and it["status"] != "uploaded":
+            if it["id"] in self._uploading_ids and it["status"] != "uploaded":
                 it["status"] = "uploading"
             self._attach_youtube(it)
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
@@ -318,7 +322,7 @@ class Api:
 
     def _locked(self, item_id: str) -> bool:
         """Being uploaded right now. (Uploaded ones can be edited and sent with push_to_youtube.)"""
-        return item_id == self._uploading_id
+        return item_id in self._uploading_ids
 
     _YT_FIELDS = {"title": "title", "local_time": "title", "tz": "title", "description": "description"}
 
@@ -570,14 +574,19 @@ class Api:
 
     def cancel(self):
         self._cancel = True
-        self._say("停止中…目前這支中斷，下次從頭重傳")
+        self._say("停止中…正在傳的會中斷，下次從中斷處接著傳")
         return True
 
     def stop_after_current(self, on: bool = True):
-        """Finish the video being uploaded, then stop (nothing is wasted). Calling again with False undoes it."""
+        """Finish the videos being uploaded, start no new ones. Calling again with False undoes it."""
         self._stop_after = bool(on)
-        self._say("這支傳完就停止" if on else "已取消「傳完這支停止」，會繼續傳下去")
+        self._say("正在傳的傳完就停止" if on else "已取消「傳完這些停止」，會繼續傳下去")
         return self._stop_after
+
+    def set_parallel(self, n):
+        self._settings.parallel_uploads = max(1, min(4, int(n)))
+        self._settings.save()
+        return self._settings.parallel_uploads
 
     # ---------------------------------------------------------- uploading
     def _upload_all(self):
@@ -593,58 +602,116 @@ class Api:
             if self._yt:
                 self.check_login()  # a dead sign-in is reported and dropped here…
             yt = self._signed_in()  # …and the browser sign-in opens before any upload starts
-            playlist_id = s.playlist_id or None
+            self._flush_playlist(yt)  # videos a crash or quota stop left out of their playlist
         except Exception as e:  # noqa: BLE001
             log.exception("setup failed")
             self._emit("done", msg=f"無法開始上傳：{e}", level="error")
             return
 
-        ok, failed = 0, False
+        width = max(1, min(4, int(s.parallel_uploads or 1)))
+        self._say(f"開始上傳 {len(todo)} 段，同時傳 {width} 支")
+        self._sent, self._batch_bytes = {}, sum(i["size"] for i in todo) or 1
         self._taskbar.progress(0)
-        for n, queued in enumerate(todo, 1):
-            if self._cancel or self._stop_after:
-                break
-            self._batch = (n - 1, len(todo))  # for the taskbar: recordings done, batch size
-            # edits made while earlier videos were uploading re-plan self._items;
-            # take this recording's latest version, not the snapshot from the start
-            item = next((i for i in self._items if i["id"] == queued["id"]), queued)
-            self._uploading_id = item["id"]
-            self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
-            try:
-                try:
-                    self._upload_item(yt, item, playlist_id)
-                except youtube.SignedOut as e:
-                    # expired mid-batch: sign in again in the browser, then redo this recording
-                    self._signed_out(e)
-                    self._say("請在跳出的瀏覽器頁面重新登入，登入後會從這一段接著上傳")
-                    yt = self._signed_in()
-                    self._upload_item(yt, item, playlist_id)
-                ok += 1
-            except youtube.SignedOut as e:
-                self._signed_out(e)
-                self._set_status(item, "error", error="YouTube 登入失效")
-                failed = True
-                break
-            except youtube.QuotaExceeded as e:
-                self._set_status(item, "error", error=f"配額用完：{e}")
-                self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")
-                failed = True
-                break
-            except youtube.Cancelled:
-                self._set_status(item, "pending")
-                break
-            except Exception as e:  # noqa: BLE001
-                log.exception("upload failed")
-                self._set_status(item, "error", error=str(e))
-                self._say(f"失敗：{e}", "error")
-                failed = True
-                self._taskbar.state(taskbar.ERROR)
-        self._uploading_id = None
+        order = {i["id"]: k for k, i in enumerate(todo)}
+        waiting = list(todo)           # table order; a recording put back keeps its place
+        running = {}                   # future -> item
+        prev_started = threading.Event()
+        prev_started.set()
+        ok, failed, hold, signed_out, quota_told = 0, False, False, None, False
+        with ThreadPoolExecutor(width) as pool:
+            while waiting or running:
+                while (waiting and len(running) < width and not hold
+                       and not self._cancel and not self._stop_after):
+                    queued = waiting.pop(0)
+                    # edits made while earlier videos were uploading re-plan self._items;
+                    # take this recording's latest version, not the snapshot from the start
+                    item = next((i for i in self._items if i["id"] == queued["id"]), queued)
+                    self._uploading_ids.add(item["id"])
+                    n = len(todo) - len(waiting)
+                    self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
+                    started = threading.Event()
+                    svc = yt if width == 1 else youtube.service_copy(yt)
+                    fut = pool.submit(self._upload_item, svc, item, prev_started, started)
+                    running[fut] = item
+                    prev_started = started
+                if not running:
+                    break
+                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                for fut in sorted(finished, key=lambda f: order.get(running[f]["id"], 0)):
+                    item = running.pop(fut)
+                    self._uploading_ids.discard(item["id"])
+                    try:
+                        fut.result()
+                        ok += 1
+                    except youtube.SignedOut as e:
+                        # expired mid-batch: let the others end, sign in once, then redo these
+                        # (an upload already under way goes on from where it stopped)
+                        signed_out, hold = e, True
+                        self._set_status(item, "pending")
+                        waiting.append(item)
+                        waiting.sort(key=lambda i: order.get(i["id"], 0))
+                    except youtube.QuotaExceeded as e:
+                        self._set_status(item, "error", error=f"配額用完：{e}")
+                        if not quota_told:
+                            self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")
+                        failed, hold, signed_out, quota_told = True, True, None, True
+                        waiting.clear()
+                    except youtube.Cancelled:
+                        self._set_status(item, "pending")
+                    except Exception as e:  # noqa: BLE001
+                        log.exception("upload failed")
+                        self._set_status(item, "error", error=str(e))
+                        self._say(f"失敗：{item['title']}：{e}", "error")
+                        failed = True
+                        self._taskbar.state(taskbar.ERROR)
+                try:  # in file order, as far as the earlier ones are done
+                    self._flush_playlist(yt, held=waiting if signed_out else ())
+                except youtube.QuotaExceeded:
+                    self._say("配額用完，有些影片還沒加入播放清單；下次開始上傳時會先補上", "error")
+                    failed, hold = True, True
+                    waiting.clear()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("could not add to the playlist yet: %s", e)
+                if signed_out and not running:
+                    self._signed_out(signed_out)
+                    self._say("請在跳出的瀏覽器頁面重新登入，登入後會從中斷處接著上傳")
+                    try:
+                        yt = self._signed_in()
+                    except Exception as e:  # noqa: BLE001
+                        log.exception("sign-in failed")
+                        self._say(f"無法重新登入：{e}", "error")
+                        failed = True
+                        break
+                    signed_out, hold = None, False
+        self._uploading_ids.clear()
         # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
         self._taskbar.flash()
-        stopped = "（已停止）" if self._cancel else "（傳完那支後停止）" if self._stop_after and ok < len(todo) else ""
+        stopped = "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
+
+    def _flush_playlist(self, yt, held=()):
+        """Add finished uploads to their playlist in file-name order.
+
+        Uploads finish out of order when several run at once, so each one waits in state.json
+        ("playlist_add") until no recording before it is still uploading (or held for a retry).
+        A crash or a quota stop leaves them there; the next batch adds them first.
+        """
+        ready = sorted(((rec.get("files") or [""])[0].upper(), fp, dict(rec["playlist_add"]))
+                       for fp, rec in list(self._store.data.items()) if rec.get("playlist_add"))
+        if not ready:
+            return
+        busy = [i["files"][0].upper() for i in self._items if i["id"] in self._uploading_ids]
+        busy += [i["files"][0].upper() for i in held]
+        first_busy = min(busy) if busy else None
+        for first, fp, add in ready:
+            if first_busy and first > first_busy:
+                break  # an earlier recording is still uploading: keep the order
+            ids = list(add["ids"])
+            while ids:
+                youtube.add_to_playlist(yt, add["playlist"], ids[0])
+                ids.pop(0)
+                self._store.patch(fp, playlist_add={**add, "ids": ids} if ids else None)
 
     def _set_status(self, item, status, **extra):
         item["status"] = status
@@ -661,44 +728,96 @@ class Api:
             return [(paths[0], title, False)]
         if self._settings.merge_chapters and merge.ffmpeg_exe():
             self._emit("item", id=item["id"], status="merging")
-            self._taskbar.state(taskbar.INDETERMINATE)
             self._say(f"合併 {len(paths)} 個分段（無損）…")
             return [(merge.merge(paths, cancel=lambda: self._cancel), title, True)]
         return [(p, f"{title} ({i}/{len(paths)})", False) for i, p in enumerate(paths, 1)]
 
-    def _upload_item(self, yt, item, playlist_id):
+    def _taskbar_progress(self, item_id, sent):
+        self._sent[item_id] = sent
+        self._taskbar.progress(sum(self._sent.values()) / self._batch_bytes)
+
+    def _upload_item(self, yt, item, prev_started=None, started=None):
+        """Upload one recording (all its parts). Runs in a pool thread.
+
+        prev_started / started keep YouTube sessions opening in file order: this one waits
+        until the recording before it has opened its session (or ended).
+        """
+        try:
+            self._upload_parts(yt, item, prev_started, started)
+        finally:
+            if started:
+                started.set()
+
+    def _upload_parts(self, yt, item, prev_started, started):
         s = self._settings
         prev = self._store.lookup(item) or {}
         done_ids = prev.get("video_ids", []) if prev.get("status") == "partial" else []
         item["video_ids"] = list(done_ids)
         sources = self._sources(item)
+        while prev_started and not prev_started.wait(1):
+            if self._cancel:
+                raise youtube.Cancelled()
         for idx, (path, title, temp) in enumerate(sources):
             if idx < len(done_ids):
                 continue
             self._emit("item", id=item["id"], status="uploading")
             body = youtube.video_body(title, item["description"], s.category_id, s.privacy,
                                       item["recording_date"], s.title_language, s.audio_language)
+            size = os.path.getsize(path)
+            # an upload stopped earlier (stop button, crash, power cut) goes on from where it was,
+            # if it is the same file and the same title / description / date
+            sig = hashlib.sha1(json.dumps([path, size, idx, body], sort_keys=True,
+                                          ensure_ascii=False).encode()).hexdigest()
+            r = (self._store.lookup(item) or {}).get("resume") or {}
+            resume_uri = r.get("uri") if r.get("sig") == sig else None
+            if resume_uri:
+                self._say(f"從中斷處接著傳：{title}")
+
+            def on_session(uri, _sig=sig):
+                self._store.update(item, resume={"uri": uri, "sig": _sig,
+                                                 "at": datetime.now().isoformat(timespec="seconds")})
+                if started:
+                    started.set()
+
+            t0, first = time.time(), None
 
             def progress(done, total, _idx=idx):
+                nonlocal first
+                if first is None:
+                    first = (time.time(), done)
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
                            done=done, total=total)
-                # taskbar: whole batch = finished recordings + this one's share so far
-                k, count = self._batch
-                part = (_idx + (done / total if total else 0)) / len(sources)
-                self._taskbar.progress((k + part) / count)
+                self._taskbar_progress(item["id"], item["size"] * (_idx + (done / total if total else 0)) / len(sources))
 
-            vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel)
+            vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel,
+                                 resume_uri=resume_uri, on_session=on_session)
             item["video_ids"].append(vid)
-            if playlist_id:
-                youtube.add_to_playlist(yt, playlist_id, vid)
             self._store.append_history(item, vid, title, s.playlist)
-            self._set_status(item, "partial" if idx + 1 < len(sources) else "uploaded")
-            self._say(f"✓ https://youtu.be/{vid}")
+            # the playlist add waits for the recordings before this one (see _flush_playlist)
+            old = (self._store.lookup(item) or {}).get("playlist_add") or {}
+            ids = list(old.get("ids", [])) + ([vid] if s.playlist_id else [])
+            extra = {"playlist_add": {"playlist": old.get("playlist") or s.playlist_id, "ids": ids}} if ids else {}
+            self._set_status(item, "partial" if idx + 1 < len(sources) else "uploaded", resume=None, **extra)
+            self._say(f"✓ https://youtu.be/{vid}  {_speed_note(size, t0, first)}")
             if temp and s.delete_merged:
                 try:
                     os.remove(path)
                 except OSError as e:
                     log.warning("could not delete merged file: %s", e)
+
+
+def _speed_note(size: int, t0: float, first) -> str:
+    """'2.1 GB · 3 分 12 秒 · 平均 3.5 MB/s' for the log, so slow-downs show up afterwards.
+
+    Measured from the first progress report when there is one, so bytes a resumed upload
+    did not have to send again are not counted.
+    """
+    now = time.time()
+    secs = now - t0
+    rate_t, rate_b = (first[0], size - first[1]) if first and now - first[0] > 1 else (t0, size)
+    speed = rate_b / max(now - rate_t, 0.001)
+    took = f"{int(secs // 60)} 分 {int(secs % 60)} 秒" if secs >= 60 else f"{secs:.0f} 秒"
+    return f"{size / 1e9:.2f} GB · {took} · 平均 {speed / 1e6:.1f} MB/s"
 
 
 def window_geometry(saved: dict, screens: list) -> dict:

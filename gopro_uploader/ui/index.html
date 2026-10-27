@@ -157,7 +157,8 @@ footer { background: var(--panel); border-top: 1px solid var(--line); }
 #upbar { display: none; align-items: center; gap: 12px; padding: 10px 14px; flex-wrap: wrap;
          background: color-mix(in srgb, var(--accent2) 14%, var(--panel)); border-bottom: 1px solid var(--accent2); }
 #upbar.on { display: flex; }
-#upbar .t { font-weight: 600; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#upbar .t { font-weight: 600; max-width: 22vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+#upbar .one { white-space: nowrap; }
 .bar.big { height: 8px; width: 260px; margin: 0; }
 td.title .t.mismatch { color: var(--accent); }
 .actions { display: flex; gap: 10px; align-items: center; padding: 8px 14px; flex-wrap: wrap; }
@@ -250,8 +251,12 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <button class="btnExport" title="把最近的執行紀錄和設定打包成 zip（不含登入憑證），回報問題時用">匯出紀錄</button>
     <button id="btnPush" hidden title="把已上傳影片在這裡改過的標題 / 說明送到 YouTube（每支約 50 配額單位）">更新到 YouTube</button>
     <button id="btnGeocode" disabled>查詢地名</button>
-    <button id="btnStopAfter" hidden title="正在傳的這支傳完後就停止，不浪費已經傳的部分">傳完這支停止</button>
-    <button id="btnCancel" disabled title="立刻停止：正在傳的這支會中斷，下次從頭重傳">停止</button>
+    <button id="btnStopAfter" hidden title="正在傳的傳完後就停止，不再開始新的">傳完正在傳的就停止</button>
+    <button id="btnCancel" disabled title="立刻停止：正在傳的會中斷，下次從中斷處接著傳">停止</button>
+    <select id="selParallel" title="同時上傳幾支。YouTube 每支只給約 3.5 MB/s，同時傳比較快；配額用量一樣">
+      <option value="1">一次 1 支</option><option value="2">同時 2 支</option>
+      <option value="3">同時 3 支</option><option value="4">同時 4 支</option>
+    </select>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
   </div>
   <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
@@ -388,7 +393,7 @@ window.onEvent = ev => {
     if (ev.error) it.error = ev.error;
     if (ev.type === "progress") { it.status = "uploading"; it.progress = ev; }
     if (it.status !== before && ["uploaded", "error"].includes(it.status)) { upDone++; upBytesDone += it.size; }
-    updateStatusCell(it); updateUpbar(it);
+    updateStatusCell(it); updateUpbar();
     if (it.status !== before && selected.has(it.id)) renderDetail();  // lock / unlock its fields
   } else if (ev.type === "done") {
     uploading = false; log(ev.msg, ev.level); refreshButtons(); render();
@@ -407,28 +412,32 @@ function fmtLeft(sec) {
   const m = Math.round(sec / 60);
   return m < 60 ? `約 ${m} 分鐘` : `約 ${Math.floor(m / 60)} 小時 ${m % 60} 分`;
 }
-function eta(it) {
+function curBytes(it) {  // how much of this recording is on YouTube so far
   const p = it.progress;
-  if (it.status !== "uploading" || !p || !p.total) return "";
-  const cur = it.size * ((p.part - 1) + p.done / p.total) / (p.parts || 1);  // this recording so far
-  const sent = upBytesDone + cur, now = Date.now() / 1000;
+  return it.status === "uploading" && p && p.total ? it.size * ((p.part - 1) + p.done / p.total) / (p.parts || 1) : 0;
+}
+function eta(sent) {
+  const now = Date.now() / 1000;
   upSamples.push([now, sent]);
   while (upSamples.length > 2 && now - upSamples[0][0] > 60) upSamples.shift();
   const [t0, b0] = upSamples[0];
-  if (now - t0 < 5 || sent <= b0) return "　估算中…";
-  const speed = (sent - b0) / (now - t0);  // bytes per second
-  return `　${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
+  if (now - t0 < 5 || sent <= b0) return "估算中…";
+  const speed = (sent - b0) / (now - t0);  // bytes per second, all uploads together
+  return `${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
 }
-function updateUpbar(it) {
+function updateUpbar() {  // several recordings can upload at once: one line each, one bar for the batch
   const bar = $("#upbar"); bar.classList.add("on");
-  const p = it.progress, pct = p && p.total ? 100 * p.done / p.total : 0;
-  const what = it.status === "merging" ? "合併分段中…（合併時無法估算時間）"
-    : it.status === "uploading" ? `${pct.toFixed(0)}%（${fmtSize(p?.done || 0)} / ${fmtSize(p?.total || it.size)}）`
-    : STATUS[it.status] || it.status;
-  bar.innerHTML = `<b>上傳中 ${Math.min(upDone + 1, upTotal)} / ${upTotal}</b>
-    <span class="t">${esc(it.title)}</span><span>${what}</span>
-    <div class="bar big"><div style="width:${it.status === "uploading" ? pct : 0}%"></div></div>
-    <b class="eta">${eta(it)}</b>
+  const act = items.filter(i => ["uploading", "merging"].includes(i.status));
+  const sent = upBytesDone + act.reduce((a, i) => a + curBytes(i), 0);
+  const pct = upBytesTotal ? 100 * sent / upBytesTotal : 0;
+  const lines = act.map(it => {
+    const p = it.progress, ip = p && p.total ? 100 * p.done / p.total : 0;
+    const what = it.status === "merging" ? "合併分段中…" : `${ip.toFixed(0)}%`;
+    return `<span class="one"><span class="t">${esc(it.title)}</span> ${what}</span>`;
+  }).join("");
+  bar.innerHTML = `<b>上傳中 ${Math.min(upDone + act.length, upTotal)} / ${upTotal}</b>${lines}
+    <div class="bar big"><div style="width:${pct}%"></div></div>
+    <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
     <span class="hint">上傳中可以繼續看預覽、修改還在排隊的錄影；不要關閉視窗。</span>`;
 }
 
@@ -567,7 +576,9 @@ function refreshButtons() {
   $("#btnCancel").disabled = !uploading;
   if (!uploading) stopAfter = false;
   $("#btnStopAfter").hidden = !uploading;
-  $("#btnStopAfter").textContent = stopAfter ? "取消「傳完這支停止」" : "傳完這支停止";
+  $("#btnStopAfter").textContent = stopAfter ? "取消「傳完就停止」" : "傳完正在傳的就停止";
+  $("#selParallel").disabled = uploading;
+  $("#selParallel").value = String(S.parallel_uploads || 3);
   const pend = items.filter(i => (i.yt_pending || []).length).length;
   $("#btnPush").hidden = !pend;
   $("#btnPush").disabled = uploading;
@@ -1059,9 +1070,10 @@ $("#btnUpload").onclick = async () => {
 };
 $("#btnStopAfter").onclick = async () => { stopAfter = await call("stop_after_current", !stopAfter); refreshButtons(); };
 $("#btnCancel").onclick = () => {
-  if (!confirm("現在就停止嗎？\n\n正在傳的這支會中斷，下次要從頭重傳。\n已經傳完的不受影響。\n\n不想浪費的話，請改按「傳完這支停止」。")) return;
+  if (!confirm("現在就停止嗎？\n\n正在傳的會中斷，下次開始上傳時從中斷處接著傳（一週內有效；改了標題或說明就要從頭傳）。\n已經傳完的不受影響。")) return;
   call("cancel");
 };
+$("#selParallel").onchange = async e => { S.parallel_uploads = await call("set_parallel", +e.target.value); };
 $("#btnPush").onclick = async () => {
   const list = items.filter(i => (i.yt_pending || []).length);
   const names = list.slice(0, 10).map(i => `・${i.title}`).join("\n") + (list.length > 10 ? `\n…還有 ${list.length - 10} 支` : "");

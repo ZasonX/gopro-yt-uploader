@@ -445,6 +445,101 @@ def test_playlists_are_listed_newest_first_and_created_explicitly():
     assert not hasattr(youtube, "find_or_create_playlist")  # no silent creation from a typed name
 
 
+def _upload_api(tmp_path, monkeypatch, n, uploader):
+    """An Api with n recordings ticked, signed in to a fake YouTube whose upload is `uploader`."""
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    for k in range(n):
+        make_mp4(tmp_path / f"GX01{k + 1:04d}.MP4", CAM + timedelta(minutes=10 * k), 4.0, [])
+    api = Api("unused.log")
+    events = []
+    api._emit = lambda kind, **d: events.append((kind, d))
+    ids = [i["id"] for i in api.scan(str(tmp_path))["items"]]
+    api.edit(ids, {"include": True})
+    api.choose_playlist("PL25", "2025 日本")
+    added = []
+    monkeypatch.setattr(api, "_signed_in", lambda: "yt")
+    monkeypatch.setattr(youtube, "service_copy", lambda yt: yt)
+    monkeypatch.setattr(youtube, "add_to_playlist", lambda yt, pl, vid: added.append((pl, vid)))
+    monkeypatch.setattr(youtube, "upload", uploader)
+    return api, events, added
+
+
+def test_parallel_uploads_keep_file_order_in_the_playlist(tmp_path, monkeypatch):
+    import time as _time
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+        k = int(os.path.basename(path)[4:8])
+        on_session(f"uri{k}")
+        _time.sleep(0.05 * (5 - k))  # the first file is the slowest: they finish in reverse
+        progress(1, 1)
+        return f"V{k}"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 4, upload)
+    api._settings.parallel_uploads = 3
+    api._upload_all()
+    assert [v for _, v in added] == ["V1", "V2", "V3", "V4"]  # playlist in file order anyway
+    assert all(p == "PL25" for p, _ in added)
+    assert events[-1][0] == "done" and "完成 4 / 4" in events[-1][1]["msg"]
+    assert not any(r.get("playlist_add") or r.get("resume") for r in api._store.data.values())
+    assert any("平均" in d.get("msg", "") and "MB/s" in d["msg"] for k, d in events if k == "log")
+
+
+def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    calls = []
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+        calls.append(resume_uri)
+        if len(calls) == 1:
+            on_session("https://upload.example/session1")  # session open, part sent…
+            raise youtube.Cancelled()                        # …then the stop button
+        return "V1"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 1, upload)
+    api._upload_all()
+    item = api._items[0]
+    assert item["status"] == "pending" and api._store.lookup(item)["resume"]["uri"]
+
+    api.scan(str(tmp_path))  # a restart: same file, same title
+    api.edit([api._items[0]["id"]], {"include": True})
+    api._upload_all()
+    assert calls == [None, "https://upload.example/session1"]
+    assert added == [("PL25", "V1")] and not api._store.lookup(api._items[0]).get("resume")
+
+
+def test_changed_title_starts_a_stopped_upload_over(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    calls = []
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+        calls.append(resume_uri)
+        if len(calls) == 1:
+            on_session("https://upload.example/session1")
+            raise youtube.Cancelled()
+        return "V1"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 1, upload)
+    api._upload_all()
+    api.edit([api._items[0]["id"]], {"title": "範例寺", "include": True})
+    api._upload_all()
+    assert calls == [None, None]  # the session carries the old title, so it is not reused
+
+
+def test_playlist_adds_left_by_a_crash_are_done_first(tmp_path, monkeypatch):
+    def upload(*a, **k):
+        raise AssertionError("nothing to upload")
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 1, upload)
+    item = api._items[0]
+    api._store.update(item, status="uploaded", video_ids=["V9"], playlist_add={"playlist": "PL25", "ids": ["V9"]})
+    api._items[0]["include"], api._items[0]["status"] = False, "uploaded"
+    api._items.append(dict(item, id="other", status="pending", include=True))  # something to upload
+    monkeypatch.setattr(api, "_upload_item", lambda *a, **k: None)
+    api._upload_all()
+    assert added == [("PL25", "V9")] and "playlist_add" not in api._store.lookup(item)
+
+
 def test_upload_needs_a_chosen_playlist(tmp_path):
     from gopro_uploader.app import Api
     make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
@@ -555,12 +650,13 @@ def test_refresh_after_upload_reads_youtube_even_if_items_went_stale(tmp_path):
     api._yt = object()
     a, b = api.scan(str(tmp_path))["items"]
     api.edit([a["id"]], {"include": True})
-    api._uploading_id = a["id"]
+    api._uploading_ids.add(a["id"])
     api.edit([b["id"]], {"title": "往出口移動"})  # re-plan during the upload
     worker_item = next(i for i in api._items if i["id"] == a["id"])
+    assert worker_item["status"] == "uploading"
     worker_item["video_ids"] = ["VIDEO_ID_02"]
     api._set_status(worker_item, "uploaded")
-    api._uploading_id = None
+    api._uploading_ids.discard(a["id"])
 
     fetch, youtube.fetch_videos = youtube.fetch_videos, lambda yt, ids: {
         "VIDEO_ID_02": {"title": "2025-04-04 03:16", "description": "", "privacy": "unlisted",

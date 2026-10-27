@@ -50,6 +50,8 @@ class Settings:
     privacy: str = "unlisted"          # unverified API projects get forced to private
     merge_chapters: bool = True
     delete_merged: bool = True
+    # YouTube takes each upload at only ~3.5 MB/s (measured 2026-10-27), so send several at once
+    parallel_uploads: int = 3
     geocode_lang: str = "zh-TW,ja"
     last_folder: str = ""
     # last window position / size: {"x", "y", "width", "height", "maximized"}

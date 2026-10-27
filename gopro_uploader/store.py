@@ -67,6 +67,19 @@ class Store:
             rec.update(fields, files=item["files"], updated=datetime.now().isoformat(timespec="seconds"))
             _write_json(self.file, self.data)
 
+    def patch(self, fp: str, **fields):
+        """Change fields of one stored recording by fingerprint; None removes the field."""
+        with _lock:
+            rec = self.data.get(fp)
+            if rec is None:
+                return
+            for k, v in fields.items():
+                if v is None:
+                    rec.pop(k, None)
+                else:
+                    rec[k] = v
+            _write_json(self.file, self.data)
+
     def append_history(self, item: dict, video_id: str, part_title: str, playlist: str):
         p = config.path("upload_history.csv")
         new = not os.path.exists(p)
