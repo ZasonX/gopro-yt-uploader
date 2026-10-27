@@ -154,12 +154,20 @@ tr.gap button.gapopen { margin-left: 8px; padding: 0 8px; font-size: 11px; borde
 .chip { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
 
 footer { background: var(--panel); border-top: 1px solid var(--line); }
-#upbar { display: none; align-items: center; gap: 12px; padding: 10px 14px; flex-wrap: wrap;
+#upbar { display: none; padding: 8px 14px; flex-direction: column; gap: 6px;
          background: color-mix(in srgb, var(--accent2) 14%, var(--panel)); border-bottom: 1px solid var(--accent2); }
 #upbar.on { display: flex; }
-#upbar .t { font-weight: 600; max-width: 22vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
-#upbar .one { white-space: nowrap; }
-.bar.big { height: 8px; width: 260px; margin: 0; }
+#upbar .head { display: flex; align-items: center; gap: 14px; cursor: pointer; flex-wrap: wrap; }
+#upbar .head .tog { margin-left: auto; color: var(--muted); font-size: 12px; }
+#upbar .bar.big { height: 6px; width: 100%; margin: 0; }
+/* one pill per upload, filled from the left as it goes; capped height, scrolls inside */
+#upbar .pills { display: flex; flex-wrap: wrap; gap: 6px; max-height: 25vh; overflow-y: auto; }
+#upbar .pill { display: inline-flex; gap: 8px; align-items: center; max-width: 360px; padding: 3px 12px;
+               border: 1px solid var(--accent2); border-radius: 999px; font-size: 12px; white-space: nowrap;
+               background: linear-gradient(to right, color-mix(in srgb, var(--accent2) 35%, transparent) var(--p, 0%), transparent var(--p, 0%)); }
+#upbar .pill .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+#upbar .pill .v { color: var(--muted); flex: none; }
+#upbar .pill.wait { border-style: dashed; border-color: var(--muted); opacity: .75; }
 td.title .t.mismatch { color: var(--accent); }
 .actions { display: flex; gap: 10px; align-items: center; padding: 8px 14px; flex-wrap: wrap; }
 .actions .summary { color: var(--muted); }
@@ -443,23 +451,38 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
   const act = items.filter(i => ["uploading", "merging"].includes(i.status));
   const sent = upBytesDone + act.reduce((a, i) => a + curBytes(i), 0);
   const pct = upBytesTotal ? 100 * sent / upBytesTotal : 0;
-  let longest = 0;
-  const lines = act.map(it => {
+  // one pill per recording under way; the pill's own background is its progress bar
+  let longest = 0, waiting = 0;
+  const pills = act.map(it => {
     const p = it.progress, ip = p && p.total ? 100 * p.done / p.total : 0;
-    if (p?.waiting) return `<span class="one"><span class="t">${esc(it.title)}</span> 只差最後一段，等前一支傳完（保持 Studio 裡的順序）</span>`;
+    const tip = `${it.title}（${it.files.join(" + ")}）`;
+    if (p?.waiting) {
+      waiting++;
+      return `<span class="pill wait" title="${esc(tip)}：只差最後一段，等前一支傳完再送出，保持 Studio 裡的順序">
+        <span class="t">${esc(it.title)}</span><span class="v">等前一支</span></span>`;
+    }
     const left = it.status === "uploading" ? itemLeft(it) : null;
     longest = left == null || longest == null ? null : Math.max(longest, left);
-    const what = it.status === "merging" ? "合併分段中…"
-      : `${ip.toFixed(0)}%${left == null ? "" : ` · 剩${fmtLeft(left)}`}`;
-    return `<span class="one"><span class="t">${esc(it.title)}</span> ${what}</span>`;
+    const what = it.status === "merging" ? "合併中…" : `${ip.toFixed(0)}%${left == null ? "" : ` · 剩${fmtLeft(left)}`}`;
+    return `<span class="pill" style="--p:${ip}%" title="${esc(tip)}"><span class="t">${esc(it.title)}</span><span class="v">${what}</span></span>`;
   }).join("");
   // how long "傳完正在傳的就停止" would take: the slowest of the ones under way
   if (!stopAfter) $("#btnStopAfter").textContent = "傳完正在傳的就停止" + (act.length && longest ? `（${fmtLeft(longest)}）` : "");
-  bar.innerHTML = `<b>上傳中 ${Math.min(upDone + act.length, upTotal)} / ${upTotal}</b>${lines}
+  const busyN = act.length - waiting, scrolled = bar.querySelector(".pills")?.scrollTop || 0;
+  bar.innerHTML =`<div class="head" title="點一下展開 / 收合每一支的進度">
+      <b>上傳中 ${busyN} 支${waiting ? `（另 ${waiting} 支等前一支）` : ""} · 已完成 ${upDone} / ${upTotal}</b>
+      <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
+      <span class="tog">${upOpen ? "收合 ▾" : `每支進度（${act.length}）▴`}</span></div>
     <div class="bar big"><div style="width:${pct}%"></div></div>
-    <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
-    <span class="hint">上傳中可以繼續看預覽、修改還在排隊的錄影；不要關閉視窗。</span>`;
+    ${upOpen ? `<div class="pills">${pills}</div>` : ""}`;
+  if (upOpen) bar.querySelector(".pills").scrollTop = scrolled;  // redrawn on every progress event
+  bar.querySelector(".head").onclick = () => {
+    upOpen = !upOpen;
+    try { localStorage.setItem("upbarOpen", upOpen ? "1" : "0"); } catch {}
+    updateUpbar();
+  };
 }
+let upOpen = (() => { try { return localStorage.getItem("upbarOpen") === "1"; } catch { return false; } })();
 
 function setPlan(res) {
   items = res.items;
