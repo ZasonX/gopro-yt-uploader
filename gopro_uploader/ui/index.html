@@ -425,16 +425,31 @@ function eta(sent) {
   const speed = (sent - b0) / (now - t0);  // bytes per second, all uploads together
   return `${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
 }
+const itemSamples = {};  // recording id -> [[time, bytes]] for its own time left
+function itemLeft(it) {  // seconds until this recording is done, or null while unknown
+  const now = Date.now() / 1000, cur = curBytes(it), s = itemSamples[it.id] ||= [];
+  if (!s.length || s[s.length - 1][1] !== cur) s.push([now, cur]);
+  while (s.length > 2 && now - s[0][0] > 60) s.shift();
+  const [t0, b0] = s[0];
+  if (now - t0 < 5 || cur <= b0) return null;
+  return (it.size - cur) / ((cur - b0) / (now - t0));
+}
 function updateUpbar() {  // several recordings can upload at once: one line each, one bar for the batch
   const bar = $("#upbar"); bar.classList.add("on");
   const act = items.filter(i => ["uploading", "merging"].includes(i.status));
   const sent = upBytesDone + act.reduce((a, i) => a + curBytes(i), 0);
   const pct = upBytesTotal ? 100 * sent / upBytesTotal : 0;
+  let longest = 0;
   const lines = act.map(it => {
     const p = it.progress, ip = p && p.total ? 100 * p.done / p.total : 0;
-    const what = it.status === "merging" ? "合併分段中…" : `${ip.toFixed(0)}%`;
+    const left = it.status === "uploading" ? itemLeft(it) : null;
+    longest = left == null || longest == null ? null : Math.max(longest, left);
+    const what = it.status === "merging" ? "合併分段中…"
+      : `${ip.toFixed(0)}%${left == null ? "" : ` · 剩${fmtLeft(left)}`}`;
     return `<span class="one"><span class="t">${esc(it.title)}</span> ${what}</span>`;
   }).join("");
+  // how long "傳完正在傳的就停止" would take: the slowest of the ones under way
+  if (!stopAfter) $("#btnStopAfter").textContent = "傳完正在傳的就停止" + (act.length && longest ? `（${fmtLeft(longest)}）` : "");
   bar.innerHTML = `<b>上傳中 ${Math.min(upDone + act.length, upTotal)} / ${upTotal}</b>${lines}
     <div class="bar big"><div style="width:${pct}%"></div></div>
     <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
@@ -1065,6 +1080,7 @@ $("#btnUpload").onclick = async () => {
   if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？\n\n${names}`)) return;
   upTotal = n; upDone = 0;
   upBytesTotal = list.reduce((a, i) => a + i.size, 0); upBytesDone = 0; upSamples = [];
+  for (const k in itemSamples) delete itemSamples[k];
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
 };
