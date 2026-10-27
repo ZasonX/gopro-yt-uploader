@@ -640,7 +640,9 @@ class Api:
                     n = len(todo) - len(waiting)
                     self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
                     started, done = threading.Event(), threading.Event()
-                    svc = yt if width == 1 else youtube.service_copy(yt)
+                    # its own connection: the window may use self._yt at the same time
+                    # (更新到 YouTube works during uploads) and httplib2 is not thread-safe
+                    svc = youtube.service_copy(yt)
                     fut = pool.submit(self._upload_item, svc, item, (prev_started, started, prev_done, done))
                     running[fut] = item
                     prev_started, prev_done = started, done

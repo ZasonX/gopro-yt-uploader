@@ -599,7 +599,6 @@ function refreshButtons() {
   $("#selParallel").value = String(S.parallel_uploads || 3);
   const pend = items.filter(i => (i.yt_pending || []).length).length;
   $("#btnPush").hidden = !pend;
-  $("#btnPush").disabled = uploading;
   $("#btnPush").textContent = `更新到 YouTube（${pend} 支）`;
 }
 
