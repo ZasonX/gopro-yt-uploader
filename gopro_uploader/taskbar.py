@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import sys
 import threading
 
@@ -45,9 +46,20 @@ class Taskbar:
         return sys.platform == "win32"
 
     def _window(self):
+        """This process's window with that title. Another copy of the app (or the tests, while
+        the real app is open) must not drive that one's button."""
         if not self._hwnd:
-            h = ctypes.windll.user32.FindWindowW(None, self.title)
-            self._hwnd = h or None
+            user32 = ctypes.windll.user32
+            user32.FindWindowExW.restype = ctypes.c_void_p
+            pid, h = ctypes.c_ulong(), None
+            while True:
+                h = user32.FindWindowExW(None, ctypes.c_void_p(h), None, self.title)
+                if not h:
+                    break
+                user32.GetWindowThreadProcessId(ctypes.c_void_p(h), ctypes.byref(pid))
+                if pid.value == os.getpid():
+                    self._hwnd = h
+                    break
         return self._hwnd
 
     def _iface(self):

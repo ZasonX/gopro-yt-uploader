@@ -846,6 +846,12 @@ def test_taskbar_is_harmless_without_a_window():
     tb.flash()  # nothing to show it on: silently does nothing
 
 
+def test_taskbar_never_drives_another_process_window():
+    # the tests run while the real app is open: its button must not blink or show progress
+    from gopro_uploader import app, taskbar
+    assert taskbar.Taskbar(app.WINDOW_TITLE)._window() is None
+
+
 def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
     import subprocess
     from gopro_uploader.app import Api
