@@ -700,13 +700,10 @@ class Api:
                         break
                     signed_out, hold = None, False
         self._uploading_ids.clear()
-        # done: clear the bar (or leave it red if something failed) and blink the button,
-        # unless the user stopped it: they know already
+        # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
-        if halted or not (self._cancel or self._stop_after):
-            self._taskbar.flash()
-            log.info("taskbar button blinks until the window is opened (batch ended by itself)")
-        stopped ="（有一支失敗，已暫停）" if halted else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
+        self._taskbar.flash()
+        stopped = "（有一支失敗，已暫停）" if halted else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
 
     def _flush_playlist(self, yt, held=()):
