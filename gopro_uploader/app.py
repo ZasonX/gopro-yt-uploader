@@ -625,7 +625,7 @@ class Api:
         prev_started.set()
         prev_done.set()
         self._parked.clear()
-        ok, failed, hold, signed_out, quota_told = 0, False, False, None, False
+        ok, failed, hold, signed_out, quota_told, halted = 0, False, False, None, False, False
         with ThreadPoolExecutor(width + MAX_PARKED) as pool:
             while waiting or running:
                 while (waiting and len(running) - len(self._parked) < width
@@ -672,8 +672,14 @@ class Api:
                         log.exception("upload failed")
                         self._set_status(item, "error", error=str(e))
                         self._say(f"失敗：{item['title']}：{e}", "error")
-                        failed = True
                         self._taskbar.state(taskbar.ERROR)
+                        if not halted:
+                            # pause everything so this one can be redone before the later ones
+                            # finish (Studio lists by upload date); the others resume next time
+                            self._say("已暫停整批，保持影片順序。正在傳的會在下次開始上傳時從中斷處接著傳。", "error")
+                        failed, halted, hold = True, True, True
+                        self._cancel = True
+                        waiting.clear()
                 try:  # in file order, as far as the earlier ones are done
                     self._flush_playlist(yt, held=waiting if signed_out else ())
                 except youtube.QuotaExceeded:
@@ -697,7 +703,7 @@ class Api:
         # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
         self._taskbar.flash()
-        stopped = "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
+        stopped = "（有一支失敗，已暫停）" if halted else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
 
     def _flush_playlist(self, yt, held=()):
@@ -739,7 +745,12 @@ class Api:
         if self._settings.merge_chapters and merge.ffmpeg_exe():
             self._emit("item", id=item["id"], status="merging")
             self._say(f"合併 {len(paths)} 個分段（無損）…")
-            return [(merge.merge(paths, cancel=lambda: self._cancel), title, True)]
+            try:
+                return [(merge.merge(paths, cancel=lambda: self._cancel), title, True)]
+            except RuntimeError:
+                if self._cancel:  # stopped while merging: not a failure, just not done yet
+                    raise youtube.Cancelled() from None
+                raise
         return [(p, f"{title} ({i}/{len(paths)})", False) for i, p in enumerate(paths, 1)]
 
     def _taskbar_progress(self, item_id, sent):

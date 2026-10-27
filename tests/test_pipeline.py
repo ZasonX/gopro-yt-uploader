@@ -490,6 +490,32 @@ def test_parallel_uploads_keep_file_order_in_the_playlist(tmp_path, monkeypatch)
     assert any("平均" in d.get("msg", "") and "MB/s" in d["msg"] for k, d in events if k == "log")
 
 
+def test_a_failure_pauses_the_batch_to_keep_the_order(tmp_path, monkeypatch):
+    import threading
+    from gopro_uploader import youtube
+    first_failed = threading.Event()
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        k = int(os.path.basename(path)[4:8])
+        on_session(f"uri{k}")
+        if k == 1:
+            raise RuntimeError("重試太多次仍失敗")
+        first_failed.wait(2)
+        while not cancel():  # the later ones are under way when the first one fails…
+            pass
+        raise youtube.Cancelled()  # …and are stopped, to go on from there next time
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 3, upload)
+    api._settings.parallel_uploads = 3
+    monkeypatch.setattr(api, "_set_status", (lambda orig: lambda item, status, **kw: (
+        first_failed.set() if status == "error" else None, orig(item, status, **kw)))(api._set_status))
+    api._upload_all()
+    status = [api._store.lookup(i)["status"] for i in api._items]
+    assert status == ["error", "pending", "pending"] and added == []
+    assert all(api._store.lookup(i).get("resume") for i in api._items[1:])
+    assert "暫停" in events[-1][1]["msg"]
+
+
 def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     calls = []
