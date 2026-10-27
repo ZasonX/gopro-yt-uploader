@@ -468,17 +468,22 @@ def _upload_api(tmp_path, monkeypatch, n, uploader):
 def test_parallel_uploads_keep_file_order_in_the_playlist(tmp_path, monkeypatch):
     import time as _time
 
-    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+    finished = []
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
         k = int(os.path.basename(path)[4:8])
         on_session(f"uri{k}")
         _time.sleep(0.05 * (5 - k))  # the first file is the slowest: they finish in reverse
-        progress(1, 1)
+        progress(1, 2)
+        before_last()  # …but each holds its last chunk until the one before has finished
+        finished.append(k)
         return f"V{k}"
 
     api, events, added = _upload_api(tmp_path, monkeypatch, 4, upload)
     api._settings.parallel_uploads = 3
     api._upload_all()
-    assert [v for _, v in added] == ["V1", "V2", "V3", "V4"]  # playlist in file order anyway
+    assert finished == [1, 2, 3, 4]  # finished, so listed in Studio, in file order
+    assert [v for _, v in added] == ["V1", "V2", "V3", "V4"]  # playlist too
     assert all(p == "PL25" for p, _ in added)
     assert events[-1][0] == "done" and "完成 4 / 4" in events[-1][1]["msg"]
     assert not any(r.get("playlist_add") or r.get("resume") for r in api._store.data.values())
@@ -489,7 +494,7 @@ def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     calls = []
 
-    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
         calls.append(resume_uri)
         if len(calls) == 1:
             on_session("https://upload.example/session1")  # session open, part sent…
@@ -512,7 +517,7 @@ def test_changed_title_starts_a_stopped_upload_over(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     calls = []
 
-    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None):
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
         calls.append(resume_uri)
         if len(calls) == 1:
             on_session("https://upload.example/session1")

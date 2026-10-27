@@ -442,6 +442,7 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
   let longest = 0;
   const lines = act.map(it => {
     const p = it.progress, ip = p && p.total ? 100 * p.done / p.total : 0;
+    if (p?.waiting) return `<span class="one"><span class="t">${esc(it.title)}</span> 只差最後一段，等前一支傳完（保持 Studio 裡的順序）</span>`;
     const left = it.status === "uploading" ? itemLeft(it) : null;
     longest = left == null || longest == null ? null : Math.max(longest, left);
     const what = it.status === "merging" ? "合併分段中…"

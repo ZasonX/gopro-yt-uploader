@@ -209,30 +209,31 @@ def service_copy(yt):
 
 
 def upload(yt, path: str, body: dict, progress=None, cancel=None,
-           resume_uri: str | None = None, on_session=None) -> str:
+           resume_uri: str | None = None, on_session=None, before_last=None) -> str:
     """Resumable upload. on_session(uri) gets the upload session URI once YouTube has opened it;
     passing it back as resume_uri (even after a restart, for about a week) continues where it
-    stopped instead of sending the whole file again."""
+    stopped instead of sending the whole file again. before_last() is called (once) right
+    before the chunk that completes the video."""
     if resume_uri:
         try:
-            return _upload(yt, path, body, progress, cancel, resume_uri, on_session)
+            return _upload(yt, path, body, progress, cancel, resume_uri, on_session, before_last)
         except HttpError as e:
             if e.resp.status not in (400, 404, 410):
                 raise
             log.warning("could not resume (session gone?), starting over: %s", e)
     try:
-        return _upload(yt, path, body, progress, cancel, None, on_session)
+        return _upload(yt, path, body, progress, cancel, None, on_session, before_last)
     except HttpError as e:
         # If the API ever rejects the paid-promotion part, it fails before any
         # bytes are sent; retry without it (YouTube defaults it to "no").
         if e.resp.status == 400 and "paidProductPlacementDetails" in body:
             log.warning("retrying without paidProductPlacementDetails: %s", e)
             body = {k: v for k, v in body.items() if k != "paidProductPlacementDetails"}
-            return _upload(yt, path, body, progress, cancel, None, on_session)
+            return _upload(yt, path, body, progress, cancel, None, on_session, before_last)
         raise
 
 
-def _upload(yt, path, body, progress, cancel, resume_uri=None, on_session=None) -> str:
+def _upload(yt, path, body, progress, cancel, resume_uri=None, on_session=None, before_last=None) -> str:
     parts = ",".join(body.keys())
     media = MediaFileUpload(path, mimetype="video/*", chunksize=CHUNK, resumable=True)
     req = yt.videos().insert(part=parts, body=body, media_body=media, notifySubscribers=False)
@@ -246,6 +247,13 @@ def _upload(yt, path, body, progress, cancel, resume_uri=None, on_session=None) 
     while response is None:
         if cancel and cancel():
             raise Cancelled()
+        if before_last and media.size() - req.resumable_progress <= CHUNK:
+            # the next chunk completes the video: the caller may hold it back to fix the
+            # order videos are finished in (and so their order in Studio)
+            before_last()
+            before_last = None
+            if cancel and cancel():
+                raise Cancelled()
         try:
             status, response = req.next_chunk()
             retry = 0

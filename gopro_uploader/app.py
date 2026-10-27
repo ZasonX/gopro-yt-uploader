@@ -24,6 +24,7 @@ from .store import export_logs as store_export_logs
 log = logging.getLogger("app")
 
 WINDOW_TITLE = "GoPro → YouTube 上傳工具"
+MAX_PARKED = 6  # uploads that may wait for their last chunk on top of settings.parallel_uploads
 
 
 def _resource(*parts):
@@ -49,6 +50,7 @@ class Api:
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_ids: set[str] = set()  # several upload at once (settings.parallel_uploads)
+        self._parked: set[str] = set()  # sent all but the last chunk, waiting for the one before
         self._taskbar = taskbar.Taskbar(WINDOW_TITLE)
         self._sent: dict[str, float] = {}  # taskbar: recording id -> bytes sent; plus the batch total
         self._batch_bytes = 1
@@ -615,12 +617,19 @@ class Api:
         order = {i["id"]: k for k, i in enumerate(todo)}
         waiting = list(todo)           # table order; a recording put back keeps its place
         running = {}                   # future -> item
-        prev_started = threading.Event()
+        # order chain: each recording opens its YouTube session after the one before it, and
+        # sends its last chunk only after the one before it has finished, so videos are
+        # finished (and listed in Studio) in table order. One waiting for its last chunk is
+        # "parked" and does not count against `width`.
+        prev_started, prev_done = threading.Event(), threading.Event()
         prev_started.set()
+        prev_done.set()
+        self._parked.clear()
         ok, failed, hold, signed_out, quota_told = 0, False, False, None, False
-        with ThreadPoolExecutor(width) as pool:
+        with ThreadPoolExecutor(width + MAX_PARKED) as pool:
             while waiting or running:
-                while (waiting and len(running) < width and not hold
+                while (waiting and len(running) - len(self._parked) < width
+                       and len(running) < width + MAX_PARKED and not hold
                        and not self._cancel and not self._stop_after):
                     queued = waiting.pop(0)
                     # edits made while earlier videos were uploading re-plan self._items;
@@ -629,14 +638,15 @@ class Api:
                     self._uploading_ids.add(item["id"])
                     n = len(todo) - len(waiting)
                     self._say(f"[{n}/{len(todo)}] {item['title']}  ({' + '.join(item['files'])})")
-                    started = threading.Event()
+                    started, done = threading.Event(), threading.Event()
                     svc = yt if width == 1 else youtube.service_copy(yt)
-                    fut = pool.submit(self._upload_item, svc, item, prev_started, started)
+                    fut = pool.submit(self._upload_item, svc, item, (prev_started, started, prev_done, done))
                     running[fut] = item
-                    prev_started = started
+                    prev_started, prev_done = started, done
                 if not running:
                     break
-                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                # wake up now and then too: a recording that parks frees its slot for the next
+                finished, _ = wait(running, timeout=1, return_when=FIRST_COMPLETED)
                 for fut in sorted(finished, key=lambda f: order.get(running[f]["id"], 0)):
                     item = running.pop(fut)
                     self._uploading_ids.discard(item["id"])
@@ -736,19 +746,21 @@ class Api:
         self._sent[item_id] = sent
         self._taskbar.progress(sum(self._sent.values()) / self._batch_bytes)
 
-    def _upload_item(self, yt, item, prev_started=None, started=None):
+    def _upload_item(self, yt, item, chain=None):
         """Upload one recording (all its parts). Runs in a pool thread.
 
-        prev_started / started keep YouTube sessions opening in file order: this one waits
-        until the recording before it has opened its session (or ended).
+        chain = (prev_started, started, prev_done, done) keeps the table order (see _upload_all).
         """
+        prev_started, started, prev_done, done = chain or (None, None, None, None)
         try:
-            self._upload_parts(yt, item, prev_started, started)
+            self._upload_parts(yt, item, prev_started, started, prev_done)
         finally:
-            if started:
-                started.set()
+            self._parked.discard(item["id"])
+            for ev in (started, done):
+                if ev:
+                    ev.set()
 
-    def _upload_parts(self, yt, item, prev_started, started):
+    def _upload_parts(self, yt, item, prev_started, started, prev_done):
         s = self._settings
         prev = self._store.lookup(item) or {}
         done_ids = prev.get("video_ids", []) if prev.get("status") == "partial" else []
@@ -779,18 +791,33 @@ class Api:
                 if started:
                     started.set()
 
-            t0, first = time.time(), None
+            t0, first, last, waited = time.time(), None, (0, size), 0.0
 
             def progress(done, total, _idx=idx):
-                nonlocal first
+                nonlocal first, last
                 if first is None:
                     first = (time.time(), done)
+                last = (done, total)
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
                            done=done, total=total)
                 self._taskbar_progress(item["id"], item["size"] * (_idx + (done / total if total else 0)) / len(sources))
 
+            def before_last(_idx=idx):
+                nonlocal waited
+                if not prev_done or prev_done.is_set():
+                    return
+                w0 = time.time()
+                self._parked.add(item["id"])
+                self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
+                           done=last[0], total=last[1], waiting=True)
+                while not prev_done.wait(1) and not self._cancel:
+                    pass
+                self._parked.discard(item["id"])
+                waited = time.time() - w0
+
             vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel,
-                                 resume_uri=resume_uri, on_session=on_session)
+                                 resume_uri=resume_uri, on_session=on_session,
+                                 before_last=before_last)
             item["video_ids"].append(vid)
             self._store.append_history(item, vid, title, s.playlist)
             # the playlist add waits for the recordings before this one (see _flush_playlist)
@@ -798,7 +825,7 @@ class Api:
             ids = list(old.get("ids", [])) + ([vid] if s.playlist_id else [])
             extra = {"playlist_add": {"playlist": old.get("playlist") or s.playlist_id, "ids": ids}} if ids else {}
             self._set_status(item, "partial" if idx + 1 < len(sources) else "uploaded", resume=None, **extra)
-            self._say(f"✓ https://youtu.be/{vid}  {_speed_note(size, t0, first)}")
+            self._say(f"✓ https://youtu.be/{vid}  {_speed_note(size, t0, first, waited)}")
             if temp and s.delete_merged:
                 try:
                     os.remove(path)
@@ -806,13 +833,13 @@ class Api:
                     log.warning("could not delete merged file: %s", e)
 
 
-def _speed_note(size: int, t0: float, first) -> str:
+def _speed_note(size: int, t0: float, first, waited: float = 0.0) -> str:
     """'2.1 GB · 3 分 12 秒 · 平均 3.5 MB/s' for the log, so slow-downs show up afterwards.
 
     Measured from the first progress report when there is one, so bytes a resumed upload
     did not have to send again are not counted.
     """
-    now = time.time()
+    now = time.time() - waited  # time spent waiting for the previous video is not upload time
     secs = now - t0
     rate_t, rate_b = (first[0], size - first[1]) if first and now - first[0] > 1 else (t0, size)
     speed = rate_b / max(now - rate_t, 0.001)
