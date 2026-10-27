@@ -590,7 +590,12 @@ $("#rows").addEventListener("click", e => {
 $("#rows").addEventListener("change", async e => {
   const tr = e.target.closest("tr.row"); if (!tr) return;
   const id = tr.dataset.id;
-  if (e.target.classList.contains("inc")) setPlan(await call("edit", [id], { include: e.target.checked }));
+  if (e.target.classList.contains("inc")) {
+    // a tick on a highlighted row applies to the whole highlighted selection
+    const ids = selected.size > 1 && selected.has(id)
+      ? items.filter(i => selected.has(i.id) && !ON_YT.includes(i.status)).map(i => i.id) : [id];
+    setPlan(await call("edit", ids, { include: e.target.checked }));
+  }
 });
 // right-click a row: open the original file / show it in Explorer / copy its name
 function closeMenu() { $("#ctxmenu")?.remove(); }
@@ -742,7 +747,14 @@ function step(delta) {
 function renderNav() {
   const nav = $("#nav"), sel = items.filter(i => selected.has(i.id));
   if (sel.length !== 1) {
-    nav.innerHTML = sel.length ? `<span class="where">已選 ${sel.length} 段錄影，下面的修改會套用到全部</span>` : "";
+    if (!sel.length) { nav.innerHTML = ""; return; }
+    // several rows: one tick for all of them (already-uploaded ones are skipped)
+    const can = sel.filter(i => !ON_YT.includes(i.status)), all = can.length > 0 && can.every(i => i.include);
+    nav.innerHTML = `<span class="where">已選 ${sel.length} 段錄影，下面的修改會套用到全部</span>
+      ${can.length ? `<label class="inc ${all ? "on" : ""}" title="把已選的錄影全部打勾 / 全部取消">
+        <input type="checkbox" id="navInc" ${all ? "checked" : ""} ${uploading ? "disabled" : ""}>全部要上傳（${can.filter(i => i.include).length} / ${can.length}）</label>` : ""}`;
+    const inc = $("#navInc");
+    if (inc) inc.onchange = async () => setPlan(await call("edit", can.map(i => i.id), { include: inc.checked }));
     return;
   }
   const vis = visibleItems(), it = sel[0], i = vis.indexOf(it), onYT = ["uploading", "merging", "uploaded", "partial"].includes(it.status);
