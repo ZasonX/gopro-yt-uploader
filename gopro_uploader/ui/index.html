@@ -139,7 +139,10 @@ a.btnlink:hover { filter: brightness(1.1); }
 .hint { color: var(--muted); font-size: 12px; }
 .desc { white-space: pre-wrap; max-height: 8em; overflow: auto; }
 /* check results above the table: red = fix, yellow = heads-up, gray = info; click filters */
-.checks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.checks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--bg);
+          position: sticky; top: 0; z-index: 2; }  /* filters stay on top while the table scrolls */
+.checks:empty { display: none; }
+.tablewrap th { top: var(--checksH, 0px); }  /* column headers stick right under the filters */
 .checks:empty { display: none; }
 .checks .chip { border-radius: 999px; padding: 2px 10px; font-size: 12px; border: 1px solid var(--line); background: var(--panel); }
 .checks .chip.red { color: var(--accent); border-color: var(--accent); font-weight: 600; }
@@ -542,6 +545,11 @@ function visibleItems() {  // the rows shown under the current filter chip
   const test = filterKey && CHECKS.find(c => c.key === filterKey)?.test;
   return test ? items.filter(test) : items;
 }
+// the filter row can wrap to two lines: keep the sticky column headers just below it
+function syncChecksH() {
+  document.querySelector(".tablewrap").style.setProperty("--checksH", $("#checks").offsetHeight + "px");
+}
+window.addEventListener("resize", syncChecksH);
 function renderChecks() {
   const box = $("#checks");
   const chips = CHECKS.map(c => ({ ...c, n: items.filter(c.test).length })).filter(c => c.n);
@@ -562,6 +570,7 @@ function renderChecks() {
       { label: `📂 在資料夾中顯示（${p.name}）`, run: () => call("reveal_photo", p.folder, p.name) },
     ]));
   };
+  syncChecksH();
 }
 function gapRow(prev, next) {  // numbers skipped between two neighbouring rows: photos, or nothing
   if (prev?.number == null || next?.number == null || prev.folder !== next.folder || next.number <= prev.number + 1) return "";
