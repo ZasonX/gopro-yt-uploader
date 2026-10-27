@@ -250,7 +250,8 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <button class="btnExport" title="把最近的執行紀錄和設定打包成 zip（不含登入憑證），回報問題時用">匯出紀錄</button>
     <button id="btnPush" hidden title="把已上傳影片在這裡改過的標題 / 說明送到 YouTube（每支約 50 配額單位）">更新到 YouTube</button>
     <button id="btnGeocode" disabled>查詢地名</button>
-    <button id="btnCancel" disabled>停止</button>
+    <button id="btnStopAfter" hidden title="正在傳的這支傳完後就停止，不浪費已經傳的部分">傳完這支停止</button>
+    <button id="btnCancel" disabled title="立刻停止：正在傳的這支會中斷，下次從頭重傳">停止</button>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
   </div>
   <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
@@ -335,7 +336,7 @@ const TZS = ["Asia/Tokyo","Asia/Taipei","Asia/Seoul","Asia/Hong_Kong","Asia/Shan
   "Europe/Paris","Europe/Berlin","Europe/Rome","America/New_York","America/Chicago","America/Denver",
   "America/Los_Angeles","Pacific/Honolulu","Australia/Sydney","Pacific/Auckland","UTC"];
 const $ = s => document.querySelector(s);
-let api, S = {}, items = [], selected = new Set(), lastClicked = null, uploading = false;
+let api, S = {}, items = [], selected = new Set(), lastClicked = null, uploading = false, stopAfter = false;
 let map, layers = {};
 
 const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(0) + " MB";
@@ -563,6 +564,9 @@ function refreshButtons() {
   $("#btnUpload").textContent = todo ? `開始上傳（${todo} 段）` : "開始上傳";
   $("#btnUpload").title = todo ? "上傳表格中「上傳」欄打勾的錄影" : "先在表格的「上傳」欄，或右側的「要上傳」打勾";
   $("#btnCancel").disabled = !uploading;
+  if (!uploading) stopAfter = false;
+  $("#btnStopAfter").hidden = !uploading;
+  $("#btnStopAfter").textContent = stopAfter ? "取消「傳完這支停止」" : "傳完這支停止";
   const pend = items.filter(i => (i.yt_pending || []).length).length;
   $("#btnPush").hidden = !pend;
   $("#btnPush").disabled = uploading;
@@ -1052,7 +1056,11 @@ $("#btnUpload").onclick = async () => {
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
 };
-$("#btnCancel").onclick = () => call("cancel");
+$("#btnStopAfter").onclick = async () => { stopAfter = await call("stop_after_current", !stopAfter); refreshButtons(); };
+$("#btnCancel").onclick = () => {
+  if (!confirm("現在就停止嗎？\n\n正在傳的這支會中斷，下次要從頭重傳。\n已經傳完的不受影響。\n\n不想浪費的話，請改按「傳完這支停止」。")) return;
+  call("cancel");
+};
 $("#btnPush").onclick = async () => {
   const list = items.filter(i => (i.yt_pending || []).length);
   const names = list.slice(0, 10).map(i => `・${i.title}`).join("\n") + (list.length > 10 ? `\n…還有 ${list.length - 10} 支` : "");

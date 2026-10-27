@@ -42,6 +42,7 @@ class Api:
         self._items: list[dict] = []
         self._yt = None
         self._cancel = False
+        self._stop_after = False  # finish the current video, then stop
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_id: str | None = None
@@ -562,14 +563,21 @@ class Api:
         if self._worker and self._worker.is_alive():
             return False
         self._cancel = False
+        self._stop_after = False
         self._worker = threading.Thread(target=self._upload_all, daemon=True)
         self._worker.start()
         return True
 
     def cancel(self):
         self._cancel = True
-        self._say("取消中…目前這個區塊傳完就停止")
+        self._say("停止中…目前這支中斷，下次從頭重傳")
         return True
+
+    def stop_after_current(self, on: bool = True):
+        """Finish the video being uploaded, then stop (nothing is wasted). Calling again with False undoes it."""
+        self._stop_after = bool(on)
+        self._say("這支傳完就停止" if on else "已取消「傳完這支停止」，會繼續傳下去")
+        return self._stop_after
 
     # ---------------------------------------------------------- uploading
     def _upload_all(self):
@@ -594,7 +602,7 @@ class Api:
         ok, failed = 0, False
         self._taskbar.progress(0)
         for n, queued in enumerate(todo, 1):
-            if self._cancel:
+            if self._cancel or self._stop_after:
                 break
             self._batch = (n - 1, len(todo))  # for the taskbar: recordings done, batch size
             # edits made while earlier videos were uploading re-plan self._items;
@@ -635,7 +643,8 @@ class Api:
         # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
         self._taskbar.flash()
-        self._emit("done", msg=f"完成 {ok} / {len(todo)} 段" + ("（已取消）" if self._cancel else ""))
+        stopped = "（已停止）" if self._cancel else "（傳完那支後停止）" if self._stop_after and ok < len(todo) else ""
+        self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
 
     def _set_status(self, item, status, **extra):
         item["status"] = status
