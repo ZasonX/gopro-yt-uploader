@@ -386,7 +386,7 @@ window.onEvent = ev => {
     if (ev.video_ids) it.video_ids = ev.video_ids;
     if (ev.error) it.error = ev.error;
     if (ev.type === "progress") { it.status = "uploading"; it.progress = ev; }
-    if (it.status !== before && ["uploaded", "error"].includes(it.status)) upDone++;
+    if (it.status !== before && ["uploaded", "error"].includes(it.status)) { upDone++; upBytesDone += it.size; }
     updateStatusCell(it); updateUpbar(it);
     if (it.status !== before && selected.has(it.id)) renderDetail();  // lock / unlock its fields
   } else if (ev.type === "done") {
@@ -399,15 +399,35 @@ window.onEvent = ev => {
 
 // big, obvious upload progress in the footer
 let upTotal = 0, upDone = 0;
+// time left: bytes still to send / recent speed (averaged over the last ~60 s so it doesn't jump)
+let upBytesTotal = 0, upBytesDone = 0, upSamples = [];
+function fmtLeft(sec) {
+  if (sec < 60) return "不到 1 分鐘";
+  const m = Math.round(sec / 60);
+  return m < 60 ? `約 ${m} 分鐘` : `約 ${Math.floor(m / 60)} 小時 ${m % 60} 分`;
+}
+function eta(it) {
+  const p = it.progress;
+  if (it.status !== "uploading" || !p || !p.total) return "";
+  const cur = it.size * ((p.part - 1) + p.done / p.total) / (p.parts || 1);  // this recording so far
+  const sent = upBytesDone + cur, now = Date.now() / 1000;
+  upSamples.push([now, sent]);
+  while (upSamples.length > 2 && now - upSamples[0][0] > 60) upSamples.shift();
+  const [t0, b0] = upSamples[0];
+  if (now - t0 < 5 || sent <= b0) return "　估算中…";
+  const speed = (sent - b0) / (now - t0);  // bytes per second
+  return `　${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
+}
 function updateUpbar(it) {
   const bar = $("#upbar"); bar.classList.add("on");
   const p = it.progress, pct = p && p.total ? 100 * p.done / p.total : 0;
-  const what = it.status === "merging" ? "合併分段中…"
+  const what = it.status === "merging" ? "合併分段中…（合併時無法估算時間）"
     : it.status === "uploading" ? `${pct.toFixed(0)}%（${fmtSize(p?.done || 0)} / ${fmtSize(p?.total || it.size)}）`
     : STATUS[it.status] || it.status;
   bar.innerHTML = `<b>上傳中 ${Math.min(upDone + 1, upTotal)} / ${upTotal}</b>
     <span class="t">${esc(it.title)}</span><span>${what}</span>
     <div class="bar big"><div style="width:${it.status === "uploading" ? pct : 0}%"></div></div>
+    <b class="eta">${eta(it)}</b>
     <span class="hint">上傳中可以繼續看預覽、修改還在排隊的錄影；不要關閉視窗。</span>`;
 }
 
@@ -1016,6 +1036,7 @@ $("#btnUpload").onclick = async () => {
   const where = S.playlist_id ? `，並加入播放清單「${S.playlist}」` : "（不加入播放清單）";
   if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？\n\n${names}`)) return;
   upTotal = n; upDone = 0;
+  upBytesTotal = list.reduce((a, i) => a + i.size, 0); upBytesDone = 0; upSamples = [];
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
 };
