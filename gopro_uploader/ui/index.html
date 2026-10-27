@@ -453,15 +453,20 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
   const pct = upBytesTotal ? 100 * sent / upBytesTotal : 0;
   // one pill per recording under way; the pill's own background is its progress bar
   let longest = 0, waiting = 0;
-  const pills = act.map(it => {
+  const lefts = new Map(act.filter(i => i.status === "uploading" && !i.progress?.waiting).map(i => [i, itemLeft(i)]));
+  const pills = act.map((it, k) => {
     const p = it.progress, ip = p && p.total ? 100 * p.done / p.total : 0;
     const tip = `${it.title}（${it.files.join(" + ")}）`;
     if (p?.waiting) {
       waiting++;
-      return `<span class="pill wait" title="${esc(tip)}：只差最後一段，等前一支傳完再送出，保持 Studio 裡的順序">
-        <span class="t">${esc(it.title)}</span><span class="v">等前一支</span></span>`;
+      // it really waits for the slowest recording still sending before it in the queue
+      let by = null, byLeft = -1;
+      for (const e of act.slice(0, k)) if (lefts.has(e) && (lefts.get(e) ?? 0) >= byLeft) { by = e; byLeft = lefts.get(e) ?? 0; }
+      const what = by ? `等 ${by.title}${byLeft > 0 ? ` · ${fmtLeft(byLeft)}` : ""}` : "等前一支";
+      return `<span class="pill wait" title="${esc(tip)}：只差最後一段，等前面的傳完再送出，保持 Studio 裡的順序">
+        <span class="t">${esc(it.title)}</span><span class="v">${esc(what)}</span></span>`;
     }
-    const left = it.status === "uploading" ? itemLeft(it) : null;
+    const left = lefts.has(it) ? lefts.get(it) : null;
     longest = left == null || longest == null ? null : Math.max(longest, left);
     const what = it.status === "merging" ? "合併中…" : `${ip.toFixed(0)}%${left == null ? "" : ` · 剩${fmtLeft(left)}`}`;
     return `<span class="pill" style="--p:${ip}%" title="${esc(tip)}"><span class="t">${esc(it.title)}</span><span class="v">${what}</span></span>`;
