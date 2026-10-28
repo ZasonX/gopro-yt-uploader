@@ -398,6 +398,7 @@ window.onEvent = ev => {
   if (ev.type === "log") log(ev.msg, ev.level);
   else if (ev.type === "channel") { setChannel(ev.name); log(`已登入 YouTube 頻道：${ev.name}`); }
   else if (ev.type === "signed_out") setSignedOut();
+  else if (ev.type === "quota_wait") { quotaUntil = ev.until; updateUpbar(); }
   else if (ev.type === "scan") busy(`讀取中 ${ev.i} / ${ev.n}：${ev.name}`);
   else if (ev.type === "geocode") busy(`查詢地名 ${ev.i} / ${ev.n}：${ev.place}`);
   else if (ev.type === "item" || ev.type === "progress") {
@@ -477,8 +478,12 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
   // how long "傳完正在傳的就停止" would take: the slowest of the ones under way
   if (!stopAfter) $("#btnStopAfter").textContent = "傳完正在傳的就停止" + (act.length && longest ? `（${fmtLeft(longest)}）` : "");
   const busyN = act.length - waiting, scrolled = bar.querySelector(".pills")?.scrollTop || 0;
+  const until = quotaUntil && new Date(quotaUntil * 1000);
+  const what = until && !act.length
+    ? `今日配額用完 · ${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")} 自動繼續（${fmtLeft((until - Date.now()) / 1000)}，程式開著就好） · 已完成 ${upDone} / ${upTotal}`
+    : `上傳中 ${busyN} 支${waiting ? `（另 ${waiting} 支等前一支）` : ""} · 已完成 ${upDone} / ${upTotal}`;
   bar.innerHTML =`<div class="head" title="點一下展開 / 收合每一支的進度">
-      <b>上傳中 ${busyN} 支${waiting ? `（另 ${waiting} 支等前一支）` : ""} · 已完成 ${upDone} / ${upTotal}</b>
+      <b>${what}</b>
       <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
       <span class="tog">${upOpen ? "收合 ▾" : `每支進度（${act.length}）▴`}</span></div>
     <div class="bar big"><div style="width:${pct}%"></div></div>
@@ -490,6 +495,8 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
     updateUpbar();
   };
 }
+let quotaUntil = null;  // epoch seconds the daily quota resets, while the batch waits for it
+setInterval(() => { if (quotaUntil && uploading) updateUpbar(); }, 30000);  // keep the countdown fresh
 let upOpen = (() => { try { return localStorage.getItem("upbarOpen") === "1"; } catch { return false; } })();
 
 function setPlan(res) {

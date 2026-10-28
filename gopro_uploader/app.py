@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import webview
 
@@ -26,6 +27,19 @@ log = logging.getLogger("app")
 WINDOW_TITLE = "GoPro → YouTube 上傳工具"
 MAX_PARALLEL = 8  # HDD reads and YouTube's per-account limits are unknown beyond this
 MAX_PARKED = 6  # uploads that may wait for their last chunk on top of settings.parallel_uploads
+QUOTA_POLL = 10  # seconds between checks while waiting for the quota to reset
+
+
+def quota_reset(now: datetime | None = None) -> datetime:
+    """Local time to try again after a quota stop: YouTube resets at Pacific midnight (+5 min slack).
+
+    Right after a reset that didn't help (the next midnight is ~a day away), try every 30 min instead.
+    """
+    now = now or datetime.now()
+    pacific = now.astimezone(ZoneInfo("America/Los_Angeles"))
+    midnight = (pacific + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    at = midnight.astimezone().replace(tzinfo=None) + timedelta(minutes=5)
+    return now + timedelta(minutes=30) if at - now > timedelta(hours=23) else at
 
 
 def _resource(*parts):
@@ -626,7 +640,8 @@ class Api:
         prev_started.set()
         prev_done.set()
         self._parked.clear()
-        ok, failed, hold, signed_out, quota_told, halted = 0, False, False, None, False, False
+        ok, failed, hold, signed_out, halted = 0, False, False, None, False
+        quota_until = None             # local time the daily quota resets, while waiting for it
         with ThreadPoolExecutor(width + MAX_PARKED) as pool:
             while waiting or running:
                 while (waiting and len(running) - len(self._parked) < width
@@ -647,6 +662,10 @@ class Api:
                     running[fut] = item
                     prev_started, prev_done = started, done
                 if not running:
+                    if quota_until and waiting and self._wait_for_quota(quota_until):
+                        quota_until, hold = None, False
+                        self._say("配額已重置，繼續上傳")
+                        continue
                     break
                 # wake up now and then too: a recording that parks frees its slot for the next
                 finished, _ = wait(running, timeout=1, return_when=FIRST_COMPLETED)
@@ -664,12 +683,17 @@ class Api:
                         waiting.append(item)
                         waiting.sort(key=lambda i: order.get(i["id"], 0))
                     except youtube.QuotaExceeded as e:
-                        self._set_status(item, "pending")  # not its fault: it goes first next time
+                        # not its fault: let the ones under way finish, then wait for the reset
+                        # and go on by ourselves, this one first
+                        self._set_status(item, "pending")
+                        waiting.append(item)
+                        waiting.sort(key=lambda i: order.get(i["id"], 0))
                         log.info("配額用完：%s（%s）", e, " + ".join(item["files"]))
-                        if not quota_told:
-                            self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")
-                        failed, hold, signed_out, quota_told = True, True, None, True
-                        waiting.clear()
+                        if not quota_until:
+                            quota_until = quota_reset()
+                            self._say(f"YouTube 今日配額用完，正在傳的會傳完；"
+                                      f"{quota_until:%H:%M} 配額重置後自動繼續（程式開著就好）", "error")
+                        hold = True
                     except youtube.Cancelled:
                         self._set_status(item, "pending")
                     except Exception as e:  # noqa: BLE001
@@ -687,9 +711,10 @@ class Api:
                 try:  # in file order, as far as the earlier ones are done
                     self._flush_playlist(yt, held=waiting if signed_out else ())
                 except youtube.QuotaExceeded:
-                    self._say("配額用完，有些影片還沒加入播放清單；下次開始上傳時會先補上", "error")
-                    failed, hold = True, True
-                    waiting.clear()
+                    if not quota_until:
+                        quota_until = quota_reset()
+                        self._say(f"配額用完，有些影片還沒加入播放清單；{quota_until:%H:%M} 配額重置後自動補上並繼續", "error")
+                    hold = True
                 except Exception as e:  # noqa: BLE001
                     log.warning("could not add to the playlist yet: %s", e)
                 if signed_out and not running:
@@ -707,8 +732,20 @@ class Api:
         # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
         self._taskbar.flash()
-        stopped = "（有一支失敗，已暫停）" if halted else "（今日配額用完）" if quota_told else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
+        stopped = "（有一支失敗，已暫停）" if halted else "（配額用完，等重置時停止）" if quota_until else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
+
+    def _wait_for_quota(self, until: datetime) -> bool:
+        """Sleep until the quota resets; False if the user stopped meanwhile."""
+        self._emit("quota_wait", until=until.timestamp())
+        try:
+            while datetime.now() < until:
+                if self._cancel or self._stop_after:
+                    return False
+                time.sleep(QUOTA_POLL)
+            return True
+        finally:
+            self._emit("quota_wait", until=None)
 
     def _flush_playlist(self, yt, held=()):
         """Add finished uploads to their playlist in file-name order.

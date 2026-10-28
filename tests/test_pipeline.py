@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -516,18 +517,54 @@ def test_a_failure_pauses_the_batch_to_keep_the_order(tmp_path, monkeypatch):
     assert "暫停" in events[-1][1]["msg"]
 
 
-def test_quota_stop_leaves_the_recording_waiting_not_failed(tmp_path, monkeypatch):
+def test_quota_stop_waits_for_the_reset_and_goes_on(tmp_path, monkeypatch):
+    from gopro_uploader import app as app_mod
+    from gopro_uploader import youtube
+    calls = []
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        k = int(os.path.basename(path)[4:8])
+        calls.append(k)
+        if k == 2 and calls.count(2) == 1:
+            raise youtube.QuotaExceeded("uploadLimitExceeded")
+        return f"V{k}"
+
+    monkeypatch.setattr(app_mod, "quota_reset", lambda: datetime.now() + timedelta(seconds=0.2))
+    monkeypatch.setattr(app_mod, "QUOTA_POLL", 0.05)
+    api, events, added = _upload_api(tmp_path, monkeypatch, 3, upload)
+    api._settings.parallel_uploads = 1
+    api._upload_all()
+    assert calls == [1, 2, 2, 3]  # the stopped one goes first after the reset
+    assert [v for _, v in added] == ["V1", "V2", "V3"]
+    assert [d["until"] is None for k, d in events if k == "quota_wait"] == [False, True]
+    assert sum("自動繼續" in d.get("msg", "") for _, d in events) == 1
+    assert events[-1][0] == "done" and "完成 3 / 3" in events[-1][1]["msg"]
+
+
+def test_stop_while_waiting_for_the_quota(tmp_path, monkeypatch):
+    from gopro_uploader import app as app_mod
     from gopro_uploader import youtube
 
     def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
         raise youtube.QuotaExceeded("uploadLimitExceeded")
 
+    monkeypatch.setattr(app_mod, "quota_reset", lambda: datetime.now() + timedelta(hours=5))
+    monkeypatch.setattr(app_mod, "QUOTA_POLL", 0.05)
     api, events, added = _upload_api(tmp_path, monkeypatch, 2, upload)
-    api._settings.parallel_uploads = 1
+    api._emit = lambda kind, **d: (events.append((kind, d)), kind == "quota_wait" and api.cancel())
     api._upload_all()
     assert [(api._store.lookup(i) or {}).get("status", "pending") for i in api._items] == ["pending", "pending"]
-    assert sum("下午 3~4 點" in d.get("msg", "") for _, d in events) == 1  # told once
-    assert events[-1][0] == "done" and "配額用完" in events[-1][1]["msg"]
+    assert "配額用完" in events[-1][1]["msg"]
+
+
+def test_quota_reset_is_after_pacific_midnight():
+    from gopro_uploader.app import quota_reset
+    tw = ZoneInfo("Asia/Taipei")
+    now = datetime(2025, 4, 28, 1, 28, tzinfo=tw).astimezone().replace(tzinfo=None)
+    at = quota_reset(now).replace(tzinfo=None).astimezone(tw)
+    assert (at.hour, at.minute) == (15, 5)  # PDT: midnight = 15:00 in Taiwan
+    just_after = datetime(2025, 4, 28, 15, 10, tzinfo=tw).astimezone().replace(tzinfo=None)
+    assert quota_reset(just_after) - just_after == timedelta(minutes=30)  # reset didn't help: retry soon
 
 
 def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
