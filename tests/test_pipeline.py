@@ -595,6 +595,30 @@ def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     assert added == [("PL25", "V1")] and not api._store.lookup(api._items[0]).get("resume")
 
 
+def test_a_resumed_upload_lets_the_next_one_start(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    second = threading.Event()
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        if path.endswith("GX010002.MP4"):
+            second.set()
+            return "V2"
+        if not resume_uri:
+            on_session("https://upload.example/session1")
+            raise youtube.Cancelled()
+        # resumed: no new session is opened, yet the next recording must not wait for this one
+        assert second.wait(5), "the next upload waited for the resumed one to finish"
+        return "V1"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 2, upload)
+    api._settings.parallel_uploads = 2
+    api.edit([api._items[1]["id"]], {"include": False})
+    api._upload_all()  # the first one stops part-way
+    api.edit([i["id"] for i in api._items], {"include": True})
+    api._upload_all()
+    assert [i["status"] for i in api._items] == ["uploaded", "uploaded"]
+
+
 def test_changed_title_starts_a_stopped_upload_over(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     calls = []

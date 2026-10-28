@@ -903,6 +903,8 @@ class Api:
             if resume_uri:
                 was = (self._resume_info(item) or {}).get("pct")
                 self._say(f"從中斷處接著傳{f'（上次到 {was:.0f}%）' if was is not None else ''}：{title}")
+                if started:  # its session is already open (on_session is not called again)
+                    started.set()
             elif r.get("uri"):
                 self._say(f"標題或說明改過，從頭傳：{title}")
 
