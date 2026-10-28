@@ -10,6 +10,8 @@ dist/
 client_secret*.json
 token*.json
 
-# Personal / machine-only notes and design-conversation logs (contain email / local paths)
+# Personal / machine-only notes, the project diary and design-conversation logs
 CLAUDE.local.md
+docs/HISTORY.md
 docs/conversation/
+docs/private/
