@@ -516,6 +516,20 @@ def test_a_failure_pauses_the_batch_to_keep_the_order(tmp_path, monkeypatch):
     assert "暫停" in events[-1][1]["msg"]
 
 
+def test_quota_stop_leaves_the_recording_waiting_not_failed(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        raise youtube.QuotaExceeded("uploadLimitExceeded")
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 2, upload)
+    api._settings.parallel_uploads = 1
+    api._upload_all()
+    assert [(api._store.lookup(i) or {}).get("status", "pending") for i in api._items] == ["pending", "pending"]
+    assert sum("下午 3~4 點" in d.get("msg", "") for _, d in events) == 1  # told once
+    assert events[-1][0] == "done" and "配額用完" in events[-1][1]["msg"]
+
+
 def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     calls = []

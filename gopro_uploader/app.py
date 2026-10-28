@@ -664,7 +664,8 @@ class Api:
                         waiting.append(item)
                         waiting.sort(key=lambda i: order.get(i["id"], 0))
                     except youtube.QuotaExceeded as e:
-                        self._set_status(item, "error", error=f"配額用完：{e}")
+                        self._set_status(item, "pending")  # not its fault: it goes first next time
+                        log.info("配額用完：%s（%s）", e, " + ".join(item["files"]))
                         if not quota_told:
                             self._say("YouTube 今日配額用完，請在台灣時間下午 3~4 點（太平洋時間午夜）後再繼續", "error")
                         failed, hold, signed_out, quota_told = True, True, None, True
@@ -706,7 +707,7 @@ class Api:
         # done: clear the bar (or leave it red if something failed) and blink the button
         self._taskbar.state(taskbar.ERROR if failed else taskbar.NONE)
         self._taskbar.flash()
-        stopped = "（有一支失敗，已暫停）" if halted else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
+        stopped = "（有一支失敗，已暫停）" if halted else "（今日配額用完）" if quota_told else "（已停止）" if self._cancel else "（傳完那些後停止）" if self._stop_after and ok < len(todo) else ""
         self._emit("done", msg=f"完成 {ok} / {len(todo)} 段{stopped}")
 
     def _flush_playlist(self, yt, held=()):
