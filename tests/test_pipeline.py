@@ -989,3 +989,24 @@ def test_tz_override_note_and_own_description(tmp_path):
     api.edit([b["id"]], {"description": note})
     again = {i["files"][0]: i for i in Api("unused.log").scan(str(tmp_path))["items"]}
     assert again["GX010888.MP4"]["description"] == note and "description" in again["GX010888.MP4"]["edited"]
+
+
+def test_daily_429_counts_as_quota_but_short_429_is_retried():
+    import json
+
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    from gopro_uploader import youtube
+
+    def err(message):
+        body = {"error": {"code": 429, "message": message,
+                          "errors": [{"reason": "rateLimitExceeded", "message": message}]}}
+        return HttpError(httplib2.Response({"status": 429}), json.dumps(body).encode())
+
+    daily = ("Quota exceeded for quota metric 'Video Uploads' and limit 'Video Uploads per day' "
+             "of service 'youtube.googleapis.com'")
+    with pytest.raises(youtube.QuotaExceeded):
+        youtube._raise_if_quota(err(daily))
+    youtube._raise_if_quota(err("Too many requests"))  # not a quota stop
+    assert 429 in youtube.RETRY_STATUS

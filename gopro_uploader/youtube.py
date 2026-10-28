@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 CHUNK = 32 * 1024 * 1024
-RETRY_STATUS = {500, 502, 503, 504}
+RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 class QuotaExceeded(Exception):
@@ -288,11 +288,18 @@ def _backoff(retry, err):
 
 def _raise_if_quota(e: HttpError):
     try:
-        reasons = [x.get("reason") for x in json.loads(e.content)["error"]["errors"]]
+        err = json.loads(e.content)["error"]
+        reasons = [x.get("reason") for x in err["errors"]]
+        message = str(err.get("message", ""))
     except Exception:  # noqa: BLE001
-        reasons = []
+        reasons, message = [], ""
     if any(r in ("quotaExceeded", "uploadLimitExceeded", "dailyLimitExceeded") for r in reasons):
         raise QuotaExceeded(", ".join(reasons))
+    # the Cloud project's own daily cap (429 "Quota exceeded for quota metric 'Video Uploads'
+    # and limit 'Video Uploads per day'", seen after 88 uploads in a day); a plain
+    # rateLimitExceeded without "per day" is short-term and only retried
+    if "rateLimitExceeded" in reasons and "per day" in message:
+        raise QuotaExceeded("rateLimitExceeded (Video Uploads per day)")
 
 
 def _execute(req):
