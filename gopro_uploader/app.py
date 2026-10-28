@@ -1,6 +1,7 @@
 """Desktop window (pywebview) and the Python API exposed to the HTML UI."""
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import logging
@@ -28,6 +29,14 @@ WINDOW_TITLE = "GoPro → YouTube 上傳工具"
 MAX_PARALLEL = 8  # HDD reads and YouTube's per-account limits are unknown beyond this
 MAX_PARKED = 6  # uploads that may wait for their last chunk on top of settings.parallel_uploads
 QUOTA_POLL = 10  # seconds between checks while waiting for the quota to reset
+RESUME_FOR = timedelta(days=7)  # YouTube keeps a stopped upload session about a week
+CLOSE_WAIT = 20  # seconds to let uploads stop and save their place when the window closes
+
+
+def _resume_sig(path: str, size: int, idx: int, body: dict) -> str:
+    """Same file and same title / description / date as the stopped upload: it can go on."""
+    return hashlib.sha1(json.dumps([path, size, idx, body], sort_keys=True,
+                                   ensure_ascii=False).encode()).hexdigest()
 
 
 def quota_reset(now: datetime | None = None) -> datetime:
@@ -70,10 +79,12 @@ class Api:
         self._sent: dict[str, float] = {}  # taskbar: recording id -> bytes sent; plus the batch total
         self._batch_bytes = 1
         self._told_signed_out = False
+        self._quota_until: datetime | None = None  # while the batch waits for the quota reset
+        self._closed = False  # window gone: nothing to send events to
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
-        if self._window:
+        if self._window and not self._closed:
             payload = json.dumps({"type": kind, **data}, ensure_ascii=False, default=str)
             self._window.evaluate_js(f"window.onEvent({payload})")
 
@@ -92,10 +103,42 @@ class Api:
             if it["id"] in self._uploading_ids and it["status"] != "uploaded":
                 it["status"] = "uploading"
             self._attach_youtube(it)
+            it["resume"] = self._resume_info(it) if it["status"] not in ("uploaded", "uploading") else None
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items, "recent_places": self._settings.recent_places,
                 "photos": self._photos,
                 "camera_offset_hours": round(off.total_seconds() / 3600, 2) if off else None}
+
+    def _upload_body(self, item, title):
+        s = self._settings
+        return youtube.video_body(title, item["description"], s.category_id, s.privacy,
+                                  item["recording_date"], s.title_language, s.audio_language)
+
+    def _resume_info(self, it):
+        """A stopped upload YouTube still holds: how far it got, until when, and whether the
+        next start can go on from there (an edited title or description starts over)."""
+        r = (self._store.lookup(it) or {}).get("resume") or {}
+        if not r.get("uri"):
+            return None
+        part, parts = r.get("part") or 1, r.get("parts") or 1
+        pct = 100 * ((part - 1) + r["done"] / r["total"]) / parts if r.get("total") else None
+        try:
+            until = datetime.fromisoformat(r["at"]) + RESUME_FOR
+        except (KeyError, TypeError, ValueError):
+            until = None
+        paths = it["paths"]
+        if len(paths) == 1:
+            path, title = paths[0], it["title"]
+        elif self._settings.merge_chapters and merge.ffmpeg_exe():
+            path, title = merge.merged_path(paths), it["title"]
+        else:
+            path, title = paths[part - 1], f"{it['title']} ({part}/{len(paths)})"
+        try:
+            same = r.get("sig") == _resume_sig(path, os.path.getsize(path), part - 1, self._upload_body(it, title))
+        except (OSError, IndexError):
+            same = None  # merged file gone or a part missing: can't tell
+        return {"pct": pct, "until": until.isoformat(timespec="minutes") if until else None,
+                "expired": bool(until and datetime.now() > until), "changed": same is False}
 
     # ------------------------------------------------- YouTube's current data
     def _attach_youtube(self, it):
@@ -594,6 +637,28 @@ class Api:
         self._say("停止中…正在傳的會中斷，下次從中斷處接著傳")
         return True
 
+    def close_question(self) -> str | None:
+        """What to ask before the window closes, or None to just close."""
+        if not (self._worker and self._worker.is_alive()):
+            return None
+        if self._quota_until and not self._uploading_ids:
+            return (f"正在等 YouTube 配額重置（{self._quota_until:%H:%M} 自動繼續）。\n\n"
+                    "關閉後就不會自動繼續，要再開程式按「開始上傳」。\n\n確定要關閉嗎？")
+        return (f"正在上傳 {len(self._uploading_ids)} 支影片。\n\n"
+                "關閉後會中斷，下次開始上傳時從中斷處接著傳（一週內有效；改了標題或說明就要從頭傳）。\n\n"
+                "確定要關閉嗎？")
+
+    def shut_down(self, timeout: float = CLOSE_WAIT) -> bool:
+        """The window is closing: stop the uploads where they are (each saves its place before
+        the next chunk) and wait for them. False if they did not stop in time."""
+        self._closed = True
+        if not (self._worker and self._worker.is_alive()):
+            return True
+        self._cancel = True
+        log.info("視窗關閉：停止上傳，下次從中斷處接著傳")
+        self._worker.join(timeout)
+        return not self._worker.is_alive()
+
     def stop_after_current(self, on: bool = True):
         """Finish the videos being uploaded, start no new ones. Calling again with False undoes it."""
         self._stop_after = bool(on)
@@ -738,6 +803,7 @@ class Api:
     def _wait_for_quota(self, until: datetime) -> bool:
         """Sleep until the quota resets; False if the user stopped meanwhile."""
         self._emit("quota_wait", until=until.timestamp())
+        self._quota_until = until
         try:
             while datetime.now() < until:
                 if self._cancel or self._stop_after:
@@ -745,6 +811,7 @@ class Api:
                 time.sleep(QUOTA_POLL)
             return True
         finally:
+            self._quota_until = None
             self._emit("quota_wait", until=None)
 
     def _flush_playlist(self, yt, held=()):
@@ -825,21 +892,25 @@ class Api:
             if idx < len(done_ids):
                 continue
             self._emit("item", id=item["id"], status="uploading")
-            body = youtube.video_body(title, item["description"], s.category_id, s.privacy,
-                                      item["recording_date"], s.title_language, s.audio_language)
+            body = self._upload_body(item, title)
             size = os.path.getsize(path)
             # an upload stopped earlier (stop button, crash, power cut) goes on from where it was,
             # if it is the same file and the same title / description / date
-            sig = hashlib.sha1(json.dumps([path, size, idx, body], sort_keys=True,
-                                          ensure_ascii=False).encode()).hexdigest()
+            sig = _resume_sig(path, size, idx, body)
             r = (self._store.lookup(item) or {}).get("resume") or {}
             resume_uri = r.get("uri") if r.get("sig") == sig else None
+            sess = dict(r) if resume_uri else {}  # saved with how far it got, for 已中斷 N%
             if resume_uri:
-                self._say(f"從中斷處接著傳：{title}")
+                was = (self._resume_info(item) or {}).get("pct")
+                self._say(f"從中斷處接著傳{f'（上次到 {was:.0f}%）' if was is not None else ''}：{title}")
+            elif r.get("uri"):
+                self._say(f"標題或說明改過，從頭傳：{title}")
 
-            def on_session(uri, _sig=sig):
-                self._store.update(item, resume={"uri": uri, "sig": _sig,
-                                                 "at": datetime.now().isoformat(timespec="seconds")})
+            def on_session(uri, _sig=sig, _idx=idx):
+                sess.clear()
+                sess.update(uri=uri, sig=_sig, at=datetime.now().isoformat(timespec="seconds"),
+                            part=_idx + 1, parts=len(sources))
+                self._store.update(item, resume=dict(sess))
                 if started:
                     started.set()
 
@@ -850,6 +921,9 @@ class Api:
                 if first is None:
                     first = (time.time(), done)
                 last = (done, total)
+                if sess.get("uri") and total and done < total:
+                    sess.update(done=done, total=total, part=_idx + 1, parts=len(sources))
+                    self._store.update(item, resume=dict(sess))
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
                            done=done, total=total)
                 self._taskbar_progress(item["id"], item["size"] * (_idx + (done / total if total else 0)) / len(sources))
@@ -954,4 +1028,25 @@ def main():
                                    min_size=(1000, 650))
     api._window = window
     _remember_window(window, api._settings)
+
+    def closing():  # runs on the GUI thread; False keeps the window open
+        question = api.close_question()
+        return question is None or _ask_yes_no(window, question)
+
+    window.events.closing += closing
     webview.start(http_server=True, debug="--debug" in sys.argv)
+    # the upload threads would otherwise keep the process alive, uploading with no window
+    if not api.shut_down():
+        log.warning("uploads did not stop in %ss; exiting anyway (they resume next time)", CLOSE_WAIT)
+    logging.shutdown()
+    os._exit(0)
+
+
+def _ask_yes_no(window, text: str) -> bool:
+    """A Windows message box owned by the window (No is the default button)."""
+    try:
+        hwnd = window.native.Handle.ToInt32()
+    except Exception:  # noqa: BLE001 - no handle: a task-modal box works too
+        hwnd = 0
+    flags = 0x4 | 0x30 | 0x100 | (0 if hwnd else 0x2000)  # YESNO | WARNING | DEFBUTTON2 | TASKMODAL
+    return ctypes.windll.user32.MessageBoxW(hwnd, text, WINDOW_TITLE, flags) == 6  # IDYES

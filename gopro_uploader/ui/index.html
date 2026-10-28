@@ -87,6 +87,9 @@ a.ext:hover { text-decoration: underline; }
 .st.uploading, .st.merging { color: var(--accent2); }
 .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 3px; width: 90px; }
 .bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
+.st.resumable { color: var(--muted); }
+.st.resumable.restart { color: var(--warn); }
+.bar.paused > div { background: var(--muted); }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
 
 aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: auto; background: var(--panel); }
@@ -407,7 +410,13 @@ window.onEvent = ev => {
     if (ev.status) it.status = ev.status;
     if (ev.video_ids) it.video_ids = ev.video_ids;
     if (ev.error) it.error = ev.error;
-    if (ev.type === "progress") { it.status = "uploading"; it.progress = ev; }
+    if (ev.type === "progress") {
+      // speed counts only bytes sent now: a resumed upload's first report is what YouTube
+      // already had, not something sent in the last few seconds
+      const was = it.progress && it.status === "uploading" ? curBytes(it) : null;
+      it.status = "uploading"; it.progress = ev;
+      if (was != null) upSent += Math.max(0, curBytes(it) - was);
+    }
     if (it.status !== before && ["uploaded", "error"].includes(it.status)) { upDone++; upBytesDone += it.size; }
     updateStatusCell(it); updateUpbar();
     if (it.status !== before && selected.has(it.id)) renderDetail();  // lock / unlock its fields
@@ -423,6 +432,7 @@ window.onEvent = ev => {
 let upTotal = 0, upDone = 0;
 // time left: bytes still to send / recent speed (averaged over the last ~60 s so it doesn't jump)
 let upBytesTotal = 0, upBytesDone = 0, upSamples = [];
+let upSent = 0;  // bytes actually sent in this batch (for the speed), without resumed parts
 function fmtLeft(sec) {
   if (sec < 60) return "不到 1 分鐘";
   const m = Math.round(sec / 60);
@@ -434,16 +444,17 @@ function curBytes(it) {  // how much of this recording is on YouTube so far
 }
 function eta(sent) {
   const now = Date.now() / 1000;
-  upSamples.push([now, sent]);
+  upSamples.push([now, upSent]);
   while (upSamples.length > 2 && now - upSamples[0][0] > 60) upSamples.shift();
   const [t0, b0] = upSamples[0];
-  if (now - t0 < 5 || sent <= b0) return "估算中…";
-  const speed = (sent - b0) / (now - t0);  // bytes per second, all uploads together
+  if (now - t0 < 5 || upSent <= b0) return "估算中…";
+  const speed = (upSent - b0) / (now - t0);  // bytes per second, all uploads together
   return `${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
 }
 const itemSamples = {};  // recording id -> [[time, bytes]] for its own time left
 function itemLeft(it) {  // seconds until this recording is done, or null while unknown
   const now = Date.now() / 1000, cur = curBytes(it), s = itemSamples[it.id] ||= [];
+  if (!it.progress) return null;  // its first report may be a resumed upload's head start
   if (!s.length || s[s.length - 1][1] !== cur) s.push([now, cur]);
   while (s.length > 2 && now - s[0][0] > 60) s.shift();
   const [t0, b0] = s[0];
@@ -510,7 +521,16 @@ function setPlan(res) {
   render(); drawMap(selected.size > 0); renderDetail();
 }
 
+function fmtDay(iso) { const d = new Date(iso); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+function resumeHtml(it) {  // a stopped upload YouTube still holds
+  const r = it.resume, pct = r.pct == null ? null : Math.floor(r.pct);
+  const over = r.changed ? "標題或說明改過了，下次會從頭傳" : r.expired ? "已超過一週，YouTube 不保留了，下次會從頭傳" : "";
+  const tip = over || `下次開始上傳時從${pct == null ? "中斷處" : ` ${pct}% `}接著傳${r.until ? `（${fmtDay(r.until)} 前有效）` : ""}`;
+  return `<span class="st resumable${over ? " restart" : ""}" title="${esc(tip)}">已中斷${pct == null ? "" : ` ${pct}%`}${over ? "・會從頭傳" : ""}</span>`
+    + (pct == null ? "" : `<div class="bar paused"><div style="width:${pct}%"></div></div>`);
+}
 function statusHtml(it) {
+  if (it.status === "pending" && it.resume) return resumeHtml(it);
   let h = `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
   if (it.status === "uploading" && it.progress) {
     const p = it.progress, pct = p.total ? (100 * p.done / p.total) : 0;
@@ -544,6 +564,8 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.time_suspect && i.date_guess && !i.date_uncertain },
   { key: "chapters", level: "gray", label: "有分段", tip: "GoPro 自動切開的長片，上傳前會合併成一支（需要同樣大小的暫存空間）",
     test: i => i.files.length > 1 },
+  { key: "resume", level: "gray", label: "已中斷", tip: "傳到一半停下來的，下次開始上傳時從中斷處接著傳",
+    test: i => i.status === "pending" && !!i.resume },
   { key: "notup", level: "gray", label: "未上傳", tip: "還沒傳到 YouTube 的錄影", test: i => i.status !== "uploaded" },
   { key: "uploaded", level: "gray", label: "已上傳", tip: "", test: i => i.status === "uploaded" },
 ];
@@ -1136,8 +1158,9 @@ $("#btnUpload").onclick = async () => {
   const where = S.playlist_id ? `，並加入播放清單「${S.playlist}」` : "（不加入播放清單）";
   if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？\n\n${names}`)) return;
   upTotal = n; upDone = 0;
-  upBytesTotal = list.reduce((a, i) => a + i.size, 0); upBytesDone = 0; upSamples = [];
+  upBytesTotal = list.reduce((a, i) => a + i.size, 0); upBytesDone = 0; upSamples = []; upSent = 0;
   for (const k in itemSamples) delete itemSamples[k];
+  for (const i of list) delete i.progress;  // left over from a stopped run
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
 };

@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -575,6 +577,7 @@ def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
         calls.append(resume_uri)
         if len(calls) == 1:
             on_session("https://upload.example/session1")  # session open, part sent…
+            progress(41, 100)
             raise youtube.Cancelled()                        # …then the stop button
         return "V1"
 
@@ -584,6 +587,8 @@ def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     assert item["status"] == "pending" and api._store.lookup(item)["resume"]["uri"]
 
     api.scan(str(tmp_path))  # a restart: same file, same title
+    r = api._items[0]["resume"]  # shown as 已中斷 41%
+    assert round(r["pct"]) == 41 and not r["changed"] and not r["expired"] and r["until"]
     api.edit([api._items[0]["id"]], {"include": True})
     api._upload_all()
     assert calls == [None, "https://upload.example/session1"]
@@ -604,8 +609,29 @@ def test_changed_title_starts_a_stopped_upload_over(tmp_path, monkeypatch):
     api, events, added = _upload_api(tmp_path, monkeypatch, 1, upload)
     api._upload_all()
     api.edit([api._items[0]["id"]], {"title": "範例寺", "include": True})
+    assert api._items[0]["resume"]["changed"]  # the row says it will start over
     api._upload_all()
     assert calls == [None, None]  # the session carries the old title, so it is not reused
+
+
+def test_closing_the_window_stops_uploads(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    sent = threading.Event()
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        on_session("https://upload.example/session1")
+        sent.set()
+        while not cancel():
+            time.sleep(0.01)
+        raise youtube.Cancelled()
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 1, upload)
+    assert api.close_question() is None  # idle: just close
+    api.start_upload()
+    assert sent.wait(5)
+    assert "正在上傳 1 支" in api.close_question()
+    assert api.shut_down(timeout=5)  # stopped, place kept for next time
+    assert not api._worker.is_alive() and api._store.lookup(api._items[0])["resume"]["uri"]
 
 
 def test_playlist_adds_left_by_a_crash_are_done_first(tmp_path, monkeypatch):
