@@ -27,7 +27,10 @@ log = logging.getLogger("app")
 
 WINDOW_TITLE = "GoPro → YouTube 上傳工具"
 MAX_PARALLEL = 8  # HDD reads and YouTube's per-account limits are unknown beyond this
-MAX_PARKED = 6  # uploads that may wait for their last chunk on top of settings.parallel_uploads
+# uploads that may wait for their last chunk on top of settings.parallel_uploads; a parked one
+# only holds an idle connection, so keep this high: a long video at the front must not leave
+# the short ones behind it filling every slot (seen with 6: only 2 of 6 kept sending)
+MAX_PARKED = 40
 QUOTA_POLL = 10  # seconds between checks while waiting for the quota to reset
 RESUME_FOR = timedelta(days=7)  # YouTube keeps a stopped upload session about a week
 CLOSE_WAIT = 20  # seconds to let uploads stop and save their place when the window closes

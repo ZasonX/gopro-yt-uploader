@@ -420,6 +420,7 @@ window.onEvent = ev => {
     }
     if (it.status !== before && ["uploaded", "error"].includes(it.status)) { upDone++; upBytesDone += it.size; }
     updateStatusCell(it); updateUpbar();
+    if (it.status !== before) renderChecks();  // chip counts (已上傳 N…) follow the uploads
     if (it.status !== before && selected.has(it.id)) renderDetail();  // lock / unlock its fields
   } else if (ev.type === "done") {
     uploading = false; log(ev.msg, ev.level); refreshButtons(); render();
