@@ -413,7 +413,8 @@ window.onEvent = ev => {
     if (ev.type === "progress") {
       // speed counts only bytes sent now: a resumed upload's first report is what YouTube
       // already had, not something sent in the last few seconds
-      const was = it.progress && it.status === "uploading" ? curBytes(it) : null;
+      const r = it.resume, resumed = r && !r.changed && !r.expired;
+      const was = it.progress && it.status === "uploading" ? curBytes(it) : resumed ? null : 0;
       it.status = "uploading"; it.progress = ev;
       if (was != null) upSent += Math.max(0, curBytes(it) - was);
     }
