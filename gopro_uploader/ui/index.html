@@ -444,14 +444,16 @@ function curBytes(it) {  // how much of this recording is on YouTube so far
   const p = it.progress;
   return it.status === "uploading" && p && p.total ? it.size * ((p.part - 1) + p.done / p.total) / (p.parts || 1) : 0;
 }
-function eta(sent) {
+function eta(sent, stopIn) {  // stopIn: with 傳完就停止 on, seconds until the ones under way are done (or null)
   const now = Date.now() / 1000;
   upSamples.push([now, upSent]);
   while (upSamples.length > 2 && now - upSamples[0][0] > 60) upSamples.shift();
   const [t0, b0] = upSamples[0];
   if (now - t0 < 5 || upSent <= b0) return "估算中…";
   const speed = (upSent - b0) / (now - t0);  // bytes per second, all uploads together
-  return `${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · 剩${fmtLeft((upBytesTotal - sent) / speed)}`;
+  const left = stopIn === undefined ? `剩${fmtLeft((upBytesTotal - sent) / speed)}`
+    : stopIn ? `${fmtLeft(stopIn)}後停止` : "傳完這些就停止";
+  return `${fmtSize(sent)} / ${fmtSize(upBytesTotal)} · ${speed >= 1e6 ? (speed / 1e6).toFixed(1) + " MB" : (speed / 1e3).toFixed(0) + " KB"}/s · ${left}`;
 }
 const itemSamples = {};  // recording id -> [[time, bytes]] for its own time left
 function itemLeft(it) {  // seconds until this recording is done, or null while unknown
@@ -497,7 +499,7 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
     : `上傳中 ${busyN} 支${waiting ? `（另 ${waiting} 支等前一支）` : ""} · 已完成 ${upDone} / ${upTotal}`;
   bar.innerHTML =`<div class="head" title="點一下展開 / 收合每一支的進度">
       <b>${what}</b>
-      <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent) : ""}</b>
+      <b class="eta">${act.some(i => i.status === "uploading") ? eta(sent, stopAfter ? longest : undefined) : ""}</b>
       <span class="tog">${upOpen ? "收合 ▾" : `每支進度（${act.length}）▴`}</span></div>
     <div class="bar big"><div style="width:${pct}%"></div></div>
     ${upOpen ? `<div class="pills">${pills}</div>` : ""}`;
