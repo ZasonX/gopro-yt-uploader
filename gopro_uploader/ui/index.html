@@ -590,7 +590,7 @@ function renderChecks() {
     + (photos.length ? `<button class="chip gray" id="chipPhotos" title="GoPro 的照片和影片共用編號，所以影片編號會跳號；照片不會上傳。點一下可以開啟照片">照片 ${photos.length} ▾</button>` : "")
     + (filterKey ? `<button class="chip clear" data-k="">顯示全部 ×</button>` : "")) ;
   box.querySelectorAll("button[data-k]").forEach(b => b.onclick = () => {
-    filterKey = b.dataset.k && filterKey !== b.dataset.k ? b.dataset.k : null; render();
+    filterKey = b.dataset.k && filterKey !== b.dataset.k ? b.dataset.k : null; render({ filter: true });
   });
   const pc = $("#chipPhotos");
   if (pc) pc.onclick = e => {
@@ -615,7 +615,36 @@ function gapRow(prev, next) {  // numbers skipped between two neighbouring rows:
     ${ph.length ? '<button class="gapopen" title="在資料夾中顯示這些照片">📂 在資料夾中顯示</button>' : ""}</td></tr>`;
 }
 
-function render() {
+// a redraw keeps the scroll offset in pixels, so a filter switch or a row leaving the filter
+// (an upload finishing under 未上傳) would move the table under the mouse: put the row that was
+// at the top back where it was instead
+function tableTop() {  // y just below the sticky filters and column headers
+  const wrap = $(".tablewrap");
+  return wrap.getBoundingClientRect().top + $("#checks").offsetHeight + (wrap.querySelector("thead")?.offsetHeight || 0);
+}
+function scrollAnchor() {
+  const top = tableTop();
+  const tr = [...$("#rows").querySelectorAll("tr.row")].find(r => r.getBoundingClientRect().bottom > top);
+  return tr && { id: tr.dataset.id, y: tr.getBoundingClientRect().top - top };
+}
+function restoreScroll(anchor, filterChanged) {
+  const listed = new Set(visibleItems().map(i => i.id));
+  const rowOf = id => document.querySelector(`tr.row[data-id="${CSS.escape(id)}"]`);
+  if (filterChanged) {  // another filter: keep the selected recording in sight if it is listed
+    const sel = [lastClicked, ...selected].find(id => id && listed.has(id));
+    if (sel) { rowOf(sel)?.scrollIntoView({ block: "center" }); return; }
+  }
+  if (!anchor) return;
+  // the same row, or if it is no longer listed the next listed one (else the one before)
+  const k = Math.max(0, items.findIndex(i => i.id === anchor.id));
+  const id = (items.slice(k).find(i => listed.has(i.id)) || items.slice(0, k).reverse().find(i => listed.has(i.id)))?.id;
+  const tr = id && rowOf(id), wrap = $(".tablewrap");
+  if (!tr) { wrap.scrollTop = 0; return; }
+  wrap.scrollTop += tr.getBoundingClientRect().top - tableTop() - (id === anchor.id ? anchor.y : 0);
+}
+
+function render(opts = {}) {
+  const anchor = scrollAnchor();
   const tb = $("#rows");
   $("#empty").style.display = items.length ? "none" : "";
   renderChecks();
@@ -641,6 +670,7 @@ function render() {
             : '<span class="tag suspect">YouTube 未設定</span>'}</td>`
         : `<td class="place" title="${esc(it.place)}">${it.lat != null ? `<span class="tag ${it.loc_source}">${LSRC[it.loc_source] || ""}</span> ` : ""}${esc(it.place) || (it.lat != null ? `<span class="hint">${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span>` : '<span class="hint">無</span>')}</td>`}
     </tr>`).join("");
+  restoreScroll(anchor, opts.filter);
   summary(); refreshButtons();
 }
 
