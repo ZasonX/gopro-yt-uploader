@@ -4,6 +4,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
+import zlib
+
+from . import config
 
 
 def ffmpeg_exe() -> str | None:
@@ -17,10 +21,33 @@ def ffmpeg_exe() -> str | None:
         return None
 
 
+_writable: dict[str, bool] = {}
+
+
+def _can_write(folder: str) -> bool:
+    """Try it: os.access ignores Windows ACLs (a drive from another PC is often read-only)."""
+    if folder not in _writable:
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with tempfile.TemporaryFile(dir=folder):
+                pass
+            _writable[folder] = True
+        except OSError:
+            _writable[folder] = False
+    return _writable[folder]
+
+
 def merged_path(paths: list[str]) -> str:
-    folder = os.path.join(os.path.dirname(paths[0]), "_merged")
+    """`<src>/_merged/`, or the app's own folder when the source folder can't be written."""
+    src = os.path.dirname(os.path.abspath(paths[0]))
     stem = os.path.splitext(os.path.basename(paths[0]))[0]
-    return os.path.join(folder, f"{stem}_merged.mp4")
+    beside = os.path.join(src, "_merged", f"{stem}_merged.mp4")
+    # same file names come from every card, so the fallback name carries the source folder
+    elsewhere = config.path("merged", f"{stem}_{zlib.crc32(src.lower().encode()):08x}_merged.mp4")
+    for p in (beside, elsewhere):
+        if os.path.exists(p):
+            return p
+    return beside if _can_write(os.path.dirname(beside)) else elsewhere
 
 
 def merge(paths: list[str], cancel=None) -> str:

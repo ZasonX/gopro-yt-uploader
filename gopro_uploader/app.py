@@ -77,6 +77,7 @@ class Api:
         self._yt = None
         self._cancel = False
         self._stop_after = False  # finish the current video, then stop
+        self._cut: set[str] = set()  # recordings behind a failed one: stop these, not the others
         self._worker: threading.Thread | None = None
         self._preview: preview.PreviewServer | None = None
         self._uploading_ids: set[str] = set()  # several upload at once (settings.parallel_uploads)
@@ -715,6 +716,7 @@ class Api:
         prev_done.set()
         self._parked.clear()
         self._quota_hit.clear()
+        self._cut = set()
         ok, failed, hold, signed_out, halted = 0, False, False, None, False
         quota_until = None             # local time to try again, while waiting for the quota
         quota_said = None              # the reset time last told to the user
@@ -787,12 +789,14 @@ class Api:
                         self._set_status(item, "error", error=str(e))
                         self._say(f"失敗：{item['title']}：{e}", "error")
                         self._taskbar.state(taskbar.ERROR)
+                        # the ones before it go on; the ones after it stop so it can be redone
+                        # before they finish (Studio lists by upload date) and resume next time
+                        after = {i["id"] for i in running.values() if order[i["id"]] > order[item["id"]]}
                         if not halted:
-                            # pause everything so this one can be redone before the later ones
-                            # finish (Studio lists by upload date); the others resume next time
-                            self._say("已暫停整批，保持影片順序。正在傳的會在下次開始上傳時從中斷處接著傳。", "error")
+                            self._say("已暫停後面的，保持影片順序：排在它前面的會傳完，後面正在傳的"
+                                      "下次開始上傳時從中斷處接著傳。", "error")
+                        self._cut |= after
                         failed, halted, hold = True, True, True
-                        self._cancel = True
                         waiting.clear()
                 try:  # in file order, as far as the earlier ones are done
                     self._flush_playlist(yt, held=waiting if signed_out else ())
@@ -874,9 +878,9 @@ class Api:
             self._emit("item", id=item["id"], status="merging")
             self._say(f"合併 {len(paths)} 個分段（無損）…")
             try:
-                return [(merge.merge(paths, cancel=lambda: self._cancel), title, True)]
+                return [(merge.merge(paths, cancel=lambda: self._stopping(item)), title, True)]
             except RuntimeError:
-                if self._cancel:  # stopped while merging: not a failure, just not done yet
+                if self._stopping(item):  # stopped while merging: not a failure, just not done yet
                     raise youtube.Cancelled() from None
                 raise
         return [(p, f"{title} ({i}/{len(paths)})", False) for i, p in enumerate(paths, 1)]
@@ -885,20 +889,30 @@ class Api:
         self._sent[item_id] = sent
         self._taskbar.progress(sum(self._sent.values()) / self._batch_bytes)
 
+    def _stopping(self, item) -> bool:
+        return self._cancel or item["id"] in self._cut
+
     def _upload_item(self, yt, item, chain=None):
         """Upload one recording (all its parts). Runs in a pool thread.
 
         chain = (prev_started, started, prev_done, done) keeps the table order (see _upload_all).
         """
         prev_started, started, prev_done, done = chain or (None, None, None, None)
+        failed = False
         try:
             self._upload_parts(yt, item, prev_started, started, prev_done)
         except youtube.QuotaExceeded:
             self._quota_hit.set()
             raise
+        except (youtube.Cancelled, youtube.SignedOut):
+            raise
+        except Exception:
+            # the next one must not send its last chunk now; _upload_all stops it instead
+            failed = True
+            raise
         finally:
             self._parked.discard(item["id"])
-            for ev in (started, done):
+            for ev in (started, None if failed else done):
                 if ev:
                     ev.set()
 
@@ -909,7 +923,7 @@ class Api:
         item["video_ids"] = list(done_ids)
         sources = self._sources(item)
         while prev_started and not prev_started.wait(1):
-            if self._cancel:
+            if self._stopping(item):
                 raise youtube.Cancelled()
         if prev_started and self._quota_hit.is_set():
             raise youtube.QuotaExceeded("前一支被配額擋下，先不試")
@@ -963,12 +977,12 @@ class Api:
                 self._parked.add(item["id"])
                 self._emit("progress", id=item["id"], part=_idx + 1, parts=len(sources),
                            done=last[0], total=last[1], waiting=True)
-                while not prev_done.wait(1) and not self._cancel:
+                while not prev_done.wait(1) and not self._stopping(item):
                     pass
                 self._parked.discard(item["id"])
                 waited = time.time() - w0
 
-            vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._cancel,
+            vid = youtube.upload(yt, path, body, progress=progress, cancel=lambda: self._stopping(item),
                                  resume_uri=resume_uri, on_session=on_session,
                                  before_last=before_last)
             item["video_ids"].append(vid)

@@ -519,6 +519,35 @@ def test_a_failure_pauses_the_batch_to_keep_the_order(tmp_path, monkeypatch):
     assert "暫停" in events[-1][1]["msg"]
 
 
+def test_a_failure_lets_the_ones_before_it_finish(tmp_path, monkeypatch):
+    import threading
+    from gopro_uploader import youtube
+    second_failed = threading.Event()
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        k = int(os.path.basename(path)[4:8])
+        on_session(f"uri{k}")
+        progress(1, 2)
+        if k == 2:
+            raise RuntimeError("合併失敗")
+        second_failed.wait(2)  # all of them are under way when the second one fails
+        before_last()          # the third must not be let through by the failed second
+        if cancel():
+            raise youtube.Cancelled()
+        return f"V{k}"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 4, upload)
+    api._settings.parallel_uploads = 4
+    monkeypatch.setattr(api, "_set_status", (lambda orig: lambda item, status, **kw: (
+        second_failed.set() if status == "error" else None, orig(item, status, **kw)))(api._set_status))
+    api._upload_all()
+    status = [api._store.lookup(i)["status"] for i in api._items]
+    assert status == ["uploaded", "error", "pending", "pending"]
+    assert [v for _, v in added] == ["V1"]
+    assert all(api._store.lookup(i).get("resume") for i in api._items[2:])
+    assert not api._cancel
+
+
 def test_quota_stop_waits_for_the_reset_and_goes_on(tmp_path, monkeypatch):
     from gopro_uploader import app as app_mod
     from gopro_uploader import youtube
@@ -1067,3 +1096,21 @@ def test_daily_429_counts_as_quota_but_short_429_is_retried():
         youtube._raise_if_quota(err(daily))
     youtube._raise_if_quota(err("Too many requests"))  # not a quota stop
     assert 429 in youtube.RETRY_STATUS
+
+
+def test_merged_file_goes_to_app_data_when_the_card_folder_is_read_only(tmp_path, monkeypatch):
+    from gopro_uploader import merge
+    a, b = tmp_path / "cam" / "GX010001.MP4", tmp_path / "cam" / "GX020001.MP4"
+    other = tmp_path / "cam2" / "GX010001.MP4"
+    assert merge.merged_path([str(a), str(b)]) == str(tmp_path / "cam" / "_merged" / "GX010001_merged.mp4")
+
+    monkeypatch.setattr(merge, "_writable", {})
+    monkeypatch.setattr(merge, "_can_write", lambda folder: False)
+    out = merge.merged_path([str(a), str(b)])
+    assert os.path.dirname(out) == os.path.join(str(tmp_path / "home"), "merged")
+    assert out != merge.merged_path([str(other)])  # same name from another card doesn't clash
+
+    # a merge left over from an earlier run is found wherever it is
+    open(out, "wb").close()
+    monkeypatch.setattr(merge, "_can_write", lambda folder: True)
+    assert merge.merged_path([str(a), str(b)]) == out
