@@ -568,6 +568,29 @@ def test_quota_stop_tries_every_hour_before_the_reset(tmp_path, monkeypatch):
     assert events[-1][0] == "done" and "完成 2 / 2" in events[-1][1]["msg"]
 
 
+def test_ones_behind_a_quota_refusal_do_not_try(tmp_path, monkeypatch):
+    from gopro_uploader import app as app_mod
+    from gopro_uploader import youtube
+    calls = []
+
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        k = int(os.path.basename(path)[4:8])
+        calls.append(k)
+        if k == 2 and calls.count(2) == 1:
+            raise youtube.QuotaExceeded("rateLimitExceeded")
+        on_session(f"https://upload.example/{k}")
+        return f"V{k}"
+
+    monkeypatch.setattr(app_mod, "quota_reset", lambda: datetime.now() + timedelta(seconds=0.2))
+    monkeypatch.setattr(app_mod, "QUOTA_POLL", 0.05)
+    api, events, added = _upload_api(tmp_path, monkeypatch, 4, upload)
+    api._settings.parallel_uploads = 4
+    api._upload_all()
+    # 3 and 4 were already queued behind 2, but must not get in ahead of it (Studio order)
+    assert calls == [1, 2, 2, 3, 4]
+    assert [v for _, v in added] == ["V1", "V2", "V3", "V4"]
+
+
 def test_stop_while_waiting_for_the_quota(tmp_path, monkeypatch):
     from gopro_uploader import app as app_mod
     from gopro_uploader import youtube

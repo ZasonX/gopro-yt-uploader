@@ -86,6 +86,9 @@ class Api:
         self._batch_bytes = 1
         self._told_signed_out = False
         self._quota_until: datetime | None = None  # while the batch waits for the quota reset
+        # a recording was refused for the quota: the ones behind it don't open a session, or one
+        # let in a moment later would land in Studio before it
+        self._quota_hit = threading.Event()
         self._closed = False  # window gone: nothing to send events to
 
     # ------------------------------------------------------------ helpers
@@ -711,6 +714,7 @@ class Api:
         prev_started.set()
         prev_done.set()
         self._parked.clear()
+        self._quota_hit.clear()
         ok, failed, hold, signed_out, halted = 0, False, False, None, False
         quota_until = None             # local time to try again, while waiting for the quota
         quota_said = None              # the reset time last told to the user
@@ -748,6 +752,7 @@ class Api:
                     if quota_until and waiting and self._wait_for_quota(quota_until):
                         self._say("配額已重置，繼續上傳" if quota_until >= quota_said else "試試看配額恢復了沒")
                         quota_until, hold = None, False
+                        self._quota_hit.clear()
                         continue
                     break
                 # wake up now and then too: a recording that parks frees its slot for the next
@@ -888,6 +893,9 @@ class Api:
         prev_started, started, prev_done, done = chain or (None, None, None, None)
         try:
             self._upload_parts(yt, item, prev_started, started, prev_done)
+        except youtube.QuotaExceeded:
+            self._quota_hit.set()
+            raise
         finally:
             self._parked.discard(item["id"])
             for ev in (started, done):
@@ -903,6 +911,8 @@ class Api:
         while prev_started and not prev_started.wait(1):
             if self._cancel:
                 raise youtube.Cancelled()
+        if prev_started and self._quota_hit.is_set():
+            raise youtube.QuotaExceeded("前一支被配額擋下，先不試")
         for idx, (path, title, temp) in enumerate(sources):
             if idx < len(done_ids):
                 continue
