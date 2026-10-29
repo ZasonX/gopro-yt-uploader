@@ -643,6 +643,15 @@ def test_stopped_upload_goes_on_from_where_it_was(tmp_path, monkeypatch):
     assert added == [("PL25", "V1")] and not api._store.lookup(api._items[0]).get("resume")
 
 
+def test_first_upload_cut_off_mid_way_still_plans(tmp_path, monkeypatch):
+    # killed (or edited) during a first upload: state.json has the resume info but no status
+    api, events, added = _upload_api(tmp_path, monkeypatch, 1, lambda *a, **k: "V1")
+    api._store.update(api._items[0], resume={"uri": "https://upload.example/s", "sig": "x", "part": 1, "parts": 1})
+    assert "status" not in api._store.lookup(api._items[0])
+    api.scan(str(tmp_path))
+    assert api._items[0]["status"] == "pending"
+
+
 def test_a_resumed_upload_lets_the_next_one_start(tmp_path, monkeypatch):
     from gopro_uploader import youtube
     second = threading.Event()

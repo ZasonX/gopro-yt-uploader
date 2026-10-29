@@ -186,7 +186,8 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
         # YouTube keeps only the date; send local midnight as UTC so the day never shifts
         item["recording_date"] = local.strftime("%Y-%m-%dT00:00:00Z")
         rec_state = store_lookup(item) if store_lookup else None
-        item["status"] = rec_state["status"] if rec_state else "pending"
+        # a first upload that was stopped has only its resume info saved, no status yet
+        item["status"] = (rec_state or {}).get("status") or "pending"
         item["video_ids"] = rec_state.get("video_ids", []) if rec_state else []
         if item["status"] == "uploaded" and "include" not in ov:
             item["include"] = False
