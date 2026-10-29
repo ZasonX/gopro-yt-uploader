@@ -34,6 +34,9 @@ MAX_PARKED = 40
 QUOTA_POLL = 10  # seconds between checks while waiting for the quota to reset
 RESUME_FOR = timedelta(days=7)  # YouTube keeps a stopped upload session about a week
 CLOSE_WAIT = 20  # seconds to let uploads stop and save their place when the window closes
+# while waiting for the quota, try again this often: the reset time is Google's word for the API
+# quota, not something seen for the channel's upload limit (it could be a rolling window)
+QUOTA_PROBE = timedelta(hours=1)
 
 
 def _resume_sig(path: str, size: int, idx: int, body: dict) -> str:
@@ -645,7 +648,7 @@ class Api:
         if not (self._worker and self._worker.is_alive()):
             return None
         if self._quota_until and not self._uploading_ids:
-            return (f"正在等 YouTube 配額重置（{self._quota_until:%H:%M} 自動繼續）。\n\n"
+            return (f"正在等 YouTube 配額重置（{self._quota_until:%H:%M} 再試一次）。\n\n"
                     "關閉後就不會自動繼續，要再開程式按「開始上傳」。\n\n確定要關閉嗎？")
         return (f"正在上傳 {len(self._uploading_ids)} 支影片。\n\n"
                 "關閉後會中斷，下次開始上傳時從中斷處接著傳（一週內有效；改了標題或說明就要從頭傳）。\n\n"
@@ -709,7 +712,19 @@ class Api:
         prev_done.set()
         self._parked.clear()
         ok, failed, hold, signed_out, halted = 0, False, False, None, False
-        quota_until = None             # local time the daily quota resets, while waiting for it
+        quota_until = None             # local time to try again, while waiting for the quota
+        quota_said = None              # the reset time last told to the user
+
+        def quota_stop(msg):
+            nonlocal quota_until, quota_said
+            if quota_until:
+                return
+            reset = quota_reset()
+            quota_until = min(reset, datetime.now() + QUOTA_PROBE)
+            if reset != quota_said:  # once, not after every hourly try
+                quota_said = reset
+                self._say(msg.format(reset=reset), "error")
+
         with ThreadPoolExecutor(width + MAX_PARKED) as pool:
             while waiting or running:
                 while (waiting and len(running) - len(self._parked) < width
@@ -731,8 +746,8 @@ class Api:
                     prev_started, prev_done = started, done
                 if not running:
                     if quota_until and waiting and self._wait_for_quota(quota_until):
+                        self._say("配額已重置，繼續上傳" if quota_until >= quota_said else "試試看配額恢復了沒")
                         quota_until, hold = None, False
-                        self._say("配額已重置，繼續上傳")
                         continue
                     break
                 # wake up now and then too: a recording that parks frees its slot for the next
@@ -757,10 +772,8 @@ class Api:
                         waiting.append(item)
                         waiting.sort(key=lambda i: order.get(i["id"], 0))
                         log.info("配額用完：%s（%s）", e, " + ".join(item["files"]))
-                        if not quota_until:
-                            quota_until = quota_reset()
-                            self._say(f"YouTube 今日配額用完，正在傳的會傳完；"
-                                      f"{quota_until:%H:%M} 配額重置後自動繼續（程式開著就好）", "error")
+                        quota_stop("YouTube 今日配額用完，正在傳的會傳完；每小時試一次，"
+                                   "最晚 {reset:%H:%M} 配額重置後自動繼續（程式開著就好）")
                         hold = True
                     except youtube.Cancelled:
                         self._set_status(item, "pending")
@@ -779,9 +792,8 @@ class Api:
                 try:  # in file order, as far as the earlier ones are done
                     self._flush_playlist(yt, held=waiting if signed_out else ())
                 except youtube.QuotaExceeded:
-                    if not quota_until:
-                        quota_until = quota_reset()
-                        self._say(f"配額用完，有些影片還沒加入播放清單；{quota_until:%H:%M} 配額重置後自動補上並繼續", "error")
+                    quota_stop("配額用完，有些影片還沒加入播放清單；每小時試一次，"
+                               "最晚 {reset:%H:%M} 配額重置後自動補上並繼續")
                     hold = True
                 except Exception as e:  # noqa: BLE001
                     log.warning("could not add to the playlist yet: %s", e)

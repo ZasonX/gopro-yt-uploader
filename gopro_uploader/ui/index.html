@@ -493,7 +493,7 @@ function updateUpbar() {  // several recordings can upload at once: one line eac
   const busyN = act.length - waiting, scrolled = bar.querySelector(".pills")?.scrollTop || 0;
   const until = quotaUntil && new Date(quotaUntil * 1000);
   const what = until && !act.length
-    ? `今日配額用完 · ${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")} 自動繼續（${fmtLeft((until - Date.now()) / 1000)}，程式開著就好） · 已完成 ${upDone} / ${upTotal}`
+    ? `今日配額用完 · ${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")} 再試一次（${fmtLeft((until - Date.now()) / 1000)}，程式開著就好） · 已完成 ${upDone} / ${upTotal}`
     : `上傳中 ${busyN} 支${waiting ? `（另 ${waiting} 支等前一支）` : ""} · 已完成 ${upDone} / ${upTotal}`;
   bar.innerHTML =`<div class="head" title="點一下展開 / 收合每一支的進度">
       <b>${what}</b>
