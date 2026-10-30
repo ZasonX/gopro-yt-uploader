@@ -79,6 +79,7 @@ td.place { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .tag.nearby { color: var(--warn); border-color: var(--warn); }
 a.ext { font-size: 12px; color: var(--accent2); text-decoration: none; white-space: nowrap; }
 a.ext:hover { text-decoration: underline; }
+.plrow { display: flex; align-items: center; gap: 8px; }
 .tag.suspect { color: var(--accent); border-color: var(--accent); }
 .hint.warn { color: var(--accent); }
 .st { font-size: 12px; }
@@ -220,7 +221,8 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     </div>
   </label>
   <label class="f">播放清單（上傳後加入）
-    <button id="btnPlaylist" class="plbtn" title="從你頻道的播放清單選擇，或建立新的"></button>
+    <span class="plrow"><button id="btnPlaylist" class="plbtn" title="從你頻道的播放清單選擇，或建立新的"></button>
+      <a id="plOpen" class="ext" target="_blank" title="在瀏覽器開啟這個播放清單" hidden>打開 ↗</a></span>
   </label>
   <label class="f" title="每段錄影會從檔案自動判斷拍攝時的時區；判斷不出來時才用這個">預設時區
     <select id="trip_tz"></select>
@@ -1119,6 +1121,8 @@ function loadSettingsUI() {
   const pb = $("#btnPlaylist");
   pb.textContent = S.playlist_id ? `${S.playlist} ▾` : S.no_playlist ? "不加入播放清單 ▾" : "⚠ 請選擇 ▾";
   pb.classList.toggle("unset", !S.playlist_id && !S.no_playlist);
+  $("#plOpen").hidden = !S.playlist_id;
+  if (S.playlist_id) $("#plOpen").href = `https://www.youtube.com/playlist?list=${encodeURIComponent(S.playlist_id)}`;
   $("#trip_tz").value = S.trip_tz;
   $("#title_format").value = S.title_format;
 }
