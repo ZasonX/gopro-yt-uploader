@@ -93,7 +93,9 @@ class Api:
         # let in a moment later would land in Studio before it
         self._quota_hit = threading.Event()
         self._closed = False  # window gone: nothing to send events to
-        self._channel = self._load_channel()  # file size -> the channel's videos of that size
+        self._compared = self._load_channel()
+        self._channel = self._index_channel(self._compared.get("videos", []))  # file size -> videos
+        self._compare_stop = False
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -195,24 +197,27 @@ class Api:
                 index.setdefault(v["size"], []).append(v)
         return index
 
-    def _load_channel(self) -> dict[int, list[dict]]:
+    def _load_channel(self) -> dict:
+        """The last comparison the user asked for (nothing is read from YouTube without asking)."""
         try:
             with open(config.path(CHANNEL_FILE), encoding="utf-8") as f:
-                return self._index_channel(json.load(f)["videos"])
+                data = json.load(f)
+            data["videos"]
+            return data
         except (OSError, ValueError, KeyError, TypeError):
             return {}
 
     def _forget_channel(self):
         """Another account may sign in next: its channel is not this one."""
-        self._channel = {}
+        self._compared, self._channel = {}, {}
         try:
             os.remove(config.path(CHANNEL_FILE))
         except OSError:
             pass
 
     def _attach_channel(self, it):
-        """A file with the exact size of a video on the channel was uploaded before, even under
-        another name or by hand. A merge changes the size, so those can't be recognized."""
+        """A file with the exact size of a video the last comparison read was uploaded before,
+        even under another name or by hand. A merge changes the size: compare_result lists those."""
         it["on_channel"], it["on_channel_some"] = [], False
         if it["status"] not in ("pending", "error", "missing", "partial"):
             return
@@ -222,29 +227,104 @@ class Api:
             it["on_channel"] = list({v["id"]: v for found in hits for v in found}.values())
             it["on_channel_some"] = not all(hits)
 
-    def read_channel(self):
-        """Read the channel's videos after a scan, to mark what is already there. None if it can't."""
-        if not self._yt:
-            self._say("沒有登入 YouTube，所以沒有和頻道比對，看不出哪些已經傳過")
-            return None
-        self._say("正在和頻道上的影片比對…")
-        try:
-            videos = youtube.channel_videos(youtube.service_copy(self._yt))
-        except youtube.SignedOut as e:
-            self._signed_out(e)
-            return None
-        except Exception as e:  # noqa: BLE001 - offline, quota: the last copy stays in use
-            log.warning("could not read the channel: %s", e)
-            self._say("無法讀取頻道上的影片，先用上次比對的結果", "error")
-            return None
-        with open(config.path(CHANNEL_FILE), "w", encoding="utf-8") as f:
-            json.dump({"read_at": datetime.now().isoformat(timespec="minutes"), "videos": videos}, f, ensure_ascii=False)
-        self._channel = self._index_channel(videos)
-        res = self._replan()
+    def compare_options(self):
+        """What the 比對 dialog offers. Reads only the playlist names (1 quota unit per 50)."""
+        known = [it["local"][:10] for it in self._items if it["time_known"] and not it["time_suspect"]]
+        out = {"earliest": min(known) if known else "", "playlists": [],
+               "signed_in": bool(self._yt), "target": self._settings.playlist_id or "",
+               "last": {k: self._compared.get(k) for k in ("read_at", "scope", "complete")} if self._compared else None}
+        if self._yt:
+            try:
+                out["playlists"] = [{"id": p["id"], "title": p["title"], "count": p["count"]}
+                                    for p in youtube.list_playlists(youtube.service_copy(self._yt))]
+            except youtube.SignedOut as e:
+                self._signed_out(e)
+                out["signed_in"] = False
+            except Exception as e:  # noqa: BLE001 - offline: the dialog works without them
+                log.warning("could not read the compare options: %s", e)
+        return out
+
+    def cancel_compare(self):
+        self._compare_stop = True
+        return True
+
+    def compare(self, scope: str, since: str = "", playlist_id: str = ""):
+        """Read the range the user picked and compare it with this folder. Only reads."""
+        self._compare_stop = False
+        self._with_sign_in(lambda yt: self._read_for_compare(youtube.service_copy(yt), scope, since, playlist_id))
+        self._replan()
         n = sum(bool(it["on_channel"]) for it in self._items)
-        self._say(f"比對完成：頻道上有 {len(videos)} 支影片，這個資料夾有 {n} 段已經傳過" if n
-                  else f"比對完成：頻道上有 {len(videos)} 支影片，這個資料夾沒有已經傳過的")
-        return res
+        note = "" if self._compared["complete"] else "（中途取消，結果不完整）"
+        self._say(f"比對完成{note}：讀了 {len(self._compared['videos'])} 支影片，這個資料夾有 {n} 段已經傳過")
+        return self.compare_result()
+
+    def _read_for_compare(self, yt, scope, since, playlist_id):
+        s = self._settings
+        stop = lambda: self._compare_stop
+        page = lambda n: self._emit("compare", read=n)
+        self._say("正在讀取 YouTube 上的影片…")
+        if scope == "playlist":
+            videos, done = youtube.read_playlist(yt, playlist_id, on_page=page, cancel=stop)
+            text = "這個播放清單"
+        else:
+            uploads = youtube.uploads_playlist(yt)
+            if not uploads:
+                raise ValueError("這個帳號沒有 YouTube 頻道")
+            # a day of margin: the folder's dates are local and YouTube's are UTC
+            start = ((datetime.fromisoformat(since) - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+                     if scope == "since" else "")
+            videos, done = youtube.read_playlist(yt, uploads, since=start, on_page=page, cancel=stop)
+            text = f"{since} 以後上傳的影片" if scope == "since" else "整個頻道"
+        # the target playlist is always read too: its order is what the videos are compared with
+        order = youtube.playlist_videos(yt, s.playlist_id) if s.playlist_id and not stop() else []
+        have = {v["id"] for v in videos}
+        extra = youtube.file_info(yt, [v for v in order if v not in have]) if order else {}
+        videos += [extra[v] for v in order if v in extra]
+        where = {v: k for k, v in enumerate(order)}
+        for k, v in enumerate(videos):
+            v["pos"], v["read"] = where.get(v["id"]), k
+        self._compared = {"read_at": datetime.now().isoformat(timespec="minutes"), "scope": text, "complete": done,
+                          "target": s.playlist if order else "", "videos": videos}
+        self._channel = self._index_channel(videos)
+        with open(config.path(CHANNEL_FILE), "w", encoding="utf-8") as f:
+            json.dump(self._compared, f, ensure_ascii=False)
+
+    def compare_result(self):
+        """A row per local recording, then a row per video that matched none of them, so anything
+        the size missed (a merge, an export) can be spotted by eye."""
+        self._replan()
+        videos = self._compared.get("videos", [])
+        by_id = {v["id"]: v for v in videos}
+        by_name: dict[str, list] = {}
+        for v in videos:
+            if v.get("name"):
+                by_name.setdefault(v["name"].upper(), []).append(v)
+        used, rows = set(), []
+        for it in self._items:
+            mine = [by_id.get(i, {"id": i}) for i in it["video_ids"]] if it["status"] in ("uploaded", "partial") else []
+            named = [v for f in it["files"] for v in by_name.get(f.upper(), [])]
+            if it["status"] == "uploaded":
+                kind, found = "uploaded", mine
+            elif it["on_channel"]:
+                kind, found = "some" if it["on_channel_some"] else "uploaded", mine + it["on_channel"]
+            elif mine:
+                kind, found = "some", mine
+            elif named:
+                kind, found = "maybe", named
+            else:
+                kind, found = "none", []
+            used |= {v["id"] for v in found}
+            rows.append({"kind": kind, "video": found[0] if found else None, "more": max(0, len(found) - 1),
+                         "local": {"id": it["id"], "title": it["title"], "files": it["files"], "size": it["size"],
+                                   "when": it["local"][:16]}})
+        rows += [{"kind": "only", "video": v, "more": 0, "local": None} for v in videos if v["id"] not in used]
+        return {"rows": rows, "plan": self._replan(), "scope": self._compared.get("scope", ""),
+                "read_at": self._compared.get("read_at", ""), "complete": self._compared.get("complete", True),
+                "target": self._compared.get("target", ""), "read": len(videos)}
+
+    def clear_compare(self):
+        self._forget_channel()
+        return self._replan()
 
     # ---------------------------------------------------------- 核對
     def verify(self):

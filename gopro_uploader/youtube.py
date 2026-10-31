@@ -223,14 +223,34 @@ def file_info(yt, video_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def channel_videos(yt) -> list[dict]:
-    """Every video on the signed-in channel, see file_info (about 2 quota units per 50 videos)."""
-    r = _execute(yt.channels().list(part="contentDetails", mine=True))
-    items = r.get("items", [])
-    if not items:
-        return []
-    uploads = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-    return list(file_info(yt, playlist_videos(yt, uploads)).values())
+def uploads_playlist(yt) -> str | None:
+    """The channel's "all uploads" playlist (1 quota unit). Its itemCount is not used: it was
+    far below the real number of videos on a channel tried."""
+    items = _execute(yt.channels().list(part="contentDetails", mine=True)).get("items", [])
+    return items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+
+
+def read_playlist(yt, playlist_id: str, since: str = "", on_page=None, cancel=None) -> tuple[list[dict], bool]:
+    """The videos in a playlist with file_info, in its order (about 2 quota units per 50).
+
+    since (ISO time) is for the uploads playlist, which runs newest first: reading stops at the
+    first page entirely older than that. Returns (videos, read to the end); a cancel keeps what
+    was read so far."""
+    out = []
+    req = yt.playlistItems().list(part="snippet,contentDetails", playlistId=playlist_id, maxResults=50)
+    while req is not None:
+        if cancel and cancel():
+            return out, False
+        resp = _execute(req)
+        rows = resp.get("items", [])
+        info = file_info(yt, [r["contentDetails"]["videoId"] for r in rows])
+        out += [v for r in rows if (v := info.get(r["contentDetails"]["videoId"])) and v["published"] >= since]
+        if on_page:
+            on_page(len(out))
+        if since and rows and all(r["snippet"].get("publishedAt", "") < since for r in rows):
+            break
+        req = yt.playlistItems().list_next(req, resp)
+    return out, True
 
 
 def playlist_videos(yt, playlist_id: str) -> list[str]:

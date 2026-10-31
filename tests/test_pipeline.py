@@ -1116,27 +1116,113 @@ def test_merged_file_goes_to_app_data_when_the_card_folder_is_read_only(tmp_path
     assert merge.merged_path([str(a), str(b)]) == out
 
 
-def test_a_file_the_channel_already_has_is_marked(tmp_path, monkeypatch):
+def _compare_api(tmp_path, monkeypatch, videos, order=()):
     from gopro_uploader import app as app_mod
     from gopro_uploader import youtube
-    from gopro_uploader.app import Api
     monkeypatch.setattr(app_mod, "SAME_SIZE_MIN", 1)
     api, events, _ = _upload_api(tmp_path, monkeypatch, 1, None)
-    api._yt = "yt"
+    calls = []
+
+    def read(yt, pid, since="", on_page=None, cancel=None):
+        calls.append((pid, since))
+        return list(videos), True
+
+    monkeypatch.setattr(youtube, "uploads_playlist", lambda yt: "UU")
+    monkeypatch.setattr(youtube, "read_playlist", read)
+    monkeypatch.setattr(youtube, "playlist_videos", lambda yt, pl: list(order))
+    monkeypatch.setattr(youtube, "file_info", lambda yt, ids: {})
+    return api, events, calls
+
+
+def test_a_scan_does_not_touch_youtube(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+
+    def no(*a, **k):
+        raise AssertionError("read YouTube without being asked")
+
+    monkeypatch.setattr(youtube, "uploads_playlist", no)
+    monkeypatch.setattr(youtube, "read_playlist", no)
+    monkeypatch.setattr(youtube, "file_info", no)
+    api, _, _ = _upload_api(tmp_path, monkeypatch, 1, None)
+    assert api._items[0]["on_channel"] == []
+    assert not os.path.exists(config.path("channel.json"))
+
+
+def test_compare_marks_by_size_and_lists_the_rest(tmp_path, monkeypatch):
+    from gopro_uploader.app import Api
+    videos = [{"id": "OTHER", "title": "別的影片", "size": 123, "name": "x.mp4", "published": "2025-01-01T00:00:00Z"}]
+    api, events, calls = _compare_api(tmp_path, monkeypatch, videos, order=["OTHER"])
     it = api._items[0]
-    assert it["on_channel"] == []
+    videos.append({"id": "SAME", "title": "手動傳的", "size": it["size"], "name": "renamed.mp4", "published": "2025-01-01T00:00:00Z"})
 
-    other = {"id": "OTHER", "title": "以前手動傳的", "size": it["size"], "name": "renamed.mp4", "published": "2023-05-01T00:00:00Z"}
-    monkeypatch.setattr(youtube, "channel_videos", lambda yt: [other, {"id": "NOSIZE", "size": None}])
-    res = api.read_channel()
-    assert [v["id"] for v in res["items"][0]["on_channel"]] == ["OTHER"]
-    assert any("1 段已經傳過" in d.get("msg", "") for k, d in events if k == "log")
+    res = api.compare("since", "2025-03-01")
+    assert calls == [("UU", "2025-02-28T00:00:00Z")]
+    assert [v["id"] for v in api._items[0]["on_channel"]] == ["SAME"]
+    kinds = {r["kind"]: r for r in res["rows"]}
+    assert kinds["uploaded"]["video"]["id"] == "SAME" and kinds["only"]["video"]["id"] == "OTHER"
+    assert kinds["only"]["video"]["pos"] == 0 and res["target"] == "2025 日本"
 
-    # kept for next time, until another account signs in
+    # kept for next time, until another account signs in or it is cleared
     again = Api("unused.log")
-    assert again._channel[it["size"]][0]["id"] == "OTHER"
-    again._forget_channel()
+    assert again._channel[it["size"]][0]["id"] == "SAME"
+    again.clear_compare()
     assert Api("unused.log")._channel == {}
+
+
+def test_compare_a_same_named_file_of_another_size_is_only_a_maybe(tmp_path, monkeypatch):
+    api, _, _ = _compare_api(tmp_path, monkeypatch, [])
+    name = api._items[0]["files"][0]
+    api._compared = {"videos": [{"id": "A", "title": "t", "size": 5, "name": name.lower(), "published": ""}]}
+    assert [r["kind"] for r in api.compare_result()["rows"]] == ["maybe"]
+    assert api._items[0]["on_channel"] == []
+    api._compared = {"videos": []}
+    assert [r["kind"] for r in api.compare_result()["rows"]] == ["none"]
+
+
+def test_compare_can_read_one_playlist_or_be_cancelled(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    api, _, calls = _compare_api(tmp_path, monkeypatch, [])
+    api.compare("playlist", "", "PLX")
+    assert calls == [("PLX", "")]
+    monkeypatch.setattr(youtube, "read_playlist", lambda yt, pid, since="", on_page=None, cancel=None: ([], False))
+    assert api.compare("all")["complete"] is False
+
+
+def test_read_playlist_stops_at_the_first_page_older_than_the_date():
+    from gopro_uploader import youtube
+
+    pages = [["2025-05-02", "2025-04-30"], ["2025-03-01", "2025-02-01"], ["2024-01-01", "2024-01-01"]]
+
+    class Req:
+        def __init__(self, n):
+            self.n = n
+
+        def execute(self, **k):
+            return {"items": [{"snippet": {"publishedAt": f"{d}T00:00:00Z"},
+                               "contentDetails": {"videoId": d}} for d in pages[self.n]]}
+
+    read = []
+
+    class Items:
+        def list(self, **k):
+            return Req(0)
+
+        def list_next(self, req, resp):
+            read.append(req.n)
+            return Req(req.n + 1) if req.n + 1 < len(pages) else None
+
+    class Yt:
+        def playlistItems(self):
+            return Items()
+
+    real = youtube.file_info
+    youtube.file_info = lambda yt, ids: {i: {"id": i, "published": f"{i}T00:00:00Z"} for i in ids}
+    try:
+        got, done = youtube.read_playlist(Yt(), "UU", since="2025-04-01T00:00:00Z")
+    finally:
+        youtube.file_info = real
+    assert [v["id"] for v in got] == ["2025-05-02", "2025-04-30"] and done
+    assert read == [0]  # the second page was all older: the third is never asked for
 
 
 def test_only_some_chapters_on_the_channel_and_its_own_upload_does_not_count(tmp_path, monkeypatch):

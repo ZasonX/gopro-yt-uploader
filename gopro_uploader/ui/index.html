@@ -200,6 +200,21 @@ dialog .full { grid-column: 1 / -1; }
 dialog h2 { margin: 0 0 12px; font-size: 16px; }
 dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 #dlgVerify { width: 640px; }
+.cmpopts { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.cmpopts select { max-width: 280px; }
+#dlgCmpResult { width: 1000px; }
+.crbar { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
+.crbar .chips { margin: 0; }
+.crbar button.on { background: var(--sel); outline: 2px solid var(--accent2); }
+.crsort { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+.crwrap { max-height: 58vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.crtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.crtable th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.crtable td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.crtable td:first-child { white-space: nowrap; }
+.crtable small { color: var(--muted); display: block; }
+.ck.uploaded { color: var(--ok); } .ck.none { color: var(--accent); }
+.ck.maybe, .ck.some { color: var(--warn); } .ck.only { color: var(--accent2); }
 .vlist { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
 .vcheck { display: grid; grid-template-columns: 1.4em 1fr; }
 .vcheck .ic.ok { color: var(--ok); } .vcheck .ic.bad { color: var(--accent); }
@@ -275,6 +290,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <span class="spacer"></span>
     <!-- three groups: rarely used tools | changes to uploaded videos | uploading -->
     <button id="btnTools" title="其他工具：查詢地名、匯出紀錄">⋯</button>
+    <button id="btnCompare" hidden title="先選範圍，再和 YouTube 上的影片比對，看哪些已經傳過。只讀取，不會改任何東西">和 YouTube 比對…</button>
     <button id="btnVerify" hidden title="檢查這個資料夾傳過的影片：是不是都在 YouTube 上、大小對不對、播放清單和順序對不對。只讀取，不會改任何東西">核對</button>
     <button id="btnPush" hidden title="把已上傳影片在這裡改過的標題 / 說明送到 YouTube（每支約 50 配額單位）">更新到 YouTube</button>
     <span class="sep"></span>
@@ -291,6 +307,43 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
   <div id="log"></div>
 </footer>
+
+<dialog id="dlgCompare">
+  <h2>和 YouTube 比對</h2>
+  <div class="hint">會讀取 YouTube 上影片的標題和檔案大小，找出這個資料夾哪些已經傳過。只讀取，不會改任何東西；結果只存在這台電腦。</div>
+  <div class="cmpopts">
+    <label><input type="radio" name="cmpScope" value="since" checked> 從這天以後上傳的影片（影片不會在拍攝前上傳，通常讀很少就夠）
+      <input type="date" id="cmpSince"></label>
+    <label><input type="radio" name="cmpScope" value="playlist"> 只讀這個播放清單 <select id="cmpPlaylist"></select></label>
+    <label><input type="radio" name="cmpScope" value="all"> 整個頻道（影片多的頻道要等幾分鐘，中途可以取消）</label>
+  </div>
+  <div id="cmpTarget" class="hint"></div>
+  <div id="cmpProgress" class="hint" hidden></div>
+  <div class="btns">
+    <button id="cmpClear" hidden title="刪除存在這台電腦的比對結果，「已傳過」的標記也會消失">清除上次結果</button>
+    <button id="cmpLast" hidden>看上次結果</button>
+    <span style="flex:1"></span>
+    <button id="cmpClose">關閉</button>
+    <button id="cmpStop" hidden>取消讀取</button>
+    <button id="cmpStart" class="primary">開始比對</button>
+  </div>
+</dialog>
+
+<dialog id="dlgCmpResult">
+  <h2>比對結果</h2>
+  <div id="crInfo" class="hint"></div>
+  <div class="crbar">
+    <span id="crTabs" class="chips"></span>
+    <span style="flex:1"></span>
+    <span id="crSort" class="crsort"></span>
+  </div>
+  <div class="crwrap"><table class="crtable">
+    <thead><tr><th>結果</th><th>這台電腦</th><th>YouTube</th></tr></thead>
+    <tbody id="crRows"></tbody>
+  </table></div>
+  <div id="crMore" class="hint"></div>
+  <div class="btns"><button id="crClose">關閉</button></div>
+</dialog>
 
 <dialog id="dlgVerify">
   <h2>核對結果</h2>
@@ -415,6 +468,7 @@ async function call(name, ...args) {
 }
 
 window.onEvent = ev => {
+  if (ev.type === "compare") { $("#cmpProgress").textContent = `已讀 ${ev.read} 支…`; return; }
   if (ev.type === "log") log(ev.msg, ev.level);
   else if (ev.type === "channel") { setChannel(ev.name); log(`已登入 YouTube 頻道：${ev.name}`); }
   else if (ev.type === "signed_out") setSignedOut();
@@ -726,7 +780,7 @@ function refreshButtons() {
   $("#btnStopAfter").textContent = stopAfter ? "取消「傳完就停止」" : "傳完正在傳的就停止";
   $("#selParallel").value = String(S.parallel_uploads || 3);
   const pend = items.filter(i => (i.yt_pending || []).length).length;
-  $("#btnVerify").hidden = !has;
+  $("#btnVerify").hidden = $("#btnCompare").hidden = !has;
   $("#btnPush").hidden = !pend;
   $("#btnPush").textContent = `更新到 YouTube（${pend} 支）`;
 }
@@ -1201,9 +1255,6 @@ async function doScan(folder) {
   busy("掃描中…");
   try { const res = await call("scan", folder); S.last_folder = folder; $("#folder").value = folder; selected.clear(); setPlan(res); }
   finally { busy(null); }
-  // can take a minute on a big channel, so the table comes first and the marks follow
-  const res = await call("read_channel");
-  if (res) setPlan(res);
 }
 $("#btnPick").onclick = async () => { const f = await call("pick_folder"); if (f) doScan(f); };
 $("#btnScan").onclick = () => doScan(S.last_folder);
@@ -1246,6 +1297,99 @@ $("#btnPush").onclick = async () => {
   busy("更新到 YouTube…");
   try { setPlan(await call("push_to_youtube")); } finally { busy(null); }
 };
+
+// ------------------------------------------------------------- compare with YouTube
+const fmtGb = n => n ? (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(0)} MB`) : "";
+let cmpRunning = false;
+$("#btnCompare").onclick = async () => {
+  busy("讀取選項…");
+  let o;
+  try { o = await call("compare_options"); } finally { busy(null); }
+  $("#cmpSince").value = o.earliest;
+  $("#cmpPlaylist").innerHTML = o.playlists.map(p => `<option value="${esc(p.id)}">${esc(p.title)}（${p.count} 支）</option>`).join("");
+  if (o.target) $("#cmpPlaylist").value = o.target;
+  document.querySelector('input[name=cmpScope][value=playlist]').disabled = !o.playlists.length;
+  document.querySelector('input[name=cmpScope][value=since]').checked = true;
+  $("#cmpTarget").textContent = !o.signed_in ? "按「開始比對」時會先請你登入 YouTube。"
+    : S.playlist_id ? `也會讀取目標播放清單「${S.playlist}」，用來排序和比對。` : "";
+  $("#cmpProgress").hidden = true;
+  $("#cmpClear").hidden = $("#cmpLast").hidden = !o.last;
+  if (o.last) $("#cmpLast").textContent = `看上次結果（${o.last.read_at.replace("T", " ")}）`;
+  $("#dlgCompare").showModal();
+};
+$("#cmpStart").onclick = async () => {
+  const scope = document.querySelector("input[name=cmpScope]:checked").value;
+  if (scope === "since" && !$("#cmpSince").value) { alert("請選日期"); return; }
+  cmpRunning = true;
+  $("#cmpStart").hidden = $("#cmpClose").hidden = $("#cmpClear").hidden = $("#cmpLast").hidden = true;
+  $("#cmpStop").hidden = $("#cmpProgress").hidden = false; $("#cmpStop").disabled = false;
+  $("#cmpProgress").textContent = "讀取中…";
+  try {
+    const res = await call("compare", scope, $("#cmpSince").value, $("#cmpPlaylist").value);
+    $("#dlgCompare").close();
+    showCompareResult(res);
+  } finally {
+    cmpRunning = false;
+    $("#cmpStart").hidden = $("#cmpClose").hidden = false; $("#cmpStop").hidden = true;
+  }
+};
+$("#cmpStop").onclick = () => { $("#cmpStop").disabled = true; $("#cmpProgress").textContent = "正在停止…"; call("cancel_compare"); };
+$("#cmpClose").onclick = () => $("#dlgCompare").close();
+$("#dlgCompare").addEventListener("cancel", e => { if (cmpRunning) e.preventDefault(); });
+$("#cmpLast").onclick = async () => { $("#dlgCompare").close(); showCompareResult(await call("compare_result")); };
+$("#cmpClear").onclick = async () => {
+  if (!confirm("要刪除存在這台電腦的比對結果嗎？表格裡「已傳過」的標記也會消失。")) return;
+  setPlan(await call("clear_compare")); $("#cmpClear").hidden = $("#cmpLast").hidden = true;
+};
+
+const CR_KIND = { uploaded: "已上傳", some: "部分已上傳", maybe: "可能已上傳", none: "沒上傳", only: "只在 YouTube" };
+const CR_MAX = 2000;  // a big channel's rows would make the window crawl
+let crRes = null, crFilter = "", crOrder = "local";
+function showCompareResult(res) {
+  crRes = res; crFilter = ""; crOrder = "local";
+  setPlan(res.plan);
+  $("#crInfo").textContent = `讀取範圍：${res.scope}，共 ${res.read} 支（${(res.read_at || "").replace("T", " ")}）`
+    + (res.complete ? "" : "　⚠ 中途取消，結果不完整：沒讀到的影片會被當成沒上傳");
+  $("#dlgCmpResult").showModal();
+  renderCompare();
+}
+function crSorted(rows) {
+  const k = crOrder === "list"
+    ? r => [r.video?.pos ?? Infinity, r.video?.read ?? Infinity]
+    : r => [r.local ? 0 : 1, r.local ? rowsIndex.get(r) : r.video?.pos ?? r.video?.read ?? 0];
+  const rowsIndex = new Map(crRes.rows.map((r, i) => [r, i]));
+  return [...rows].map(r => [k(r), r]).sort(([a], [b]) => a[0] - b[0] || a[1] - b[1]).map(x => x[1]);
+}
+function crVideoCell(r) {
+  const v = r.video;
+  if (!v) return "";
+  const more = r.more ? `<small>另有 ${r.more} 支相符</small>` : "";
+  if (!v.title) return `<a class="ext" href="https://youtu.be/${esc(v.id)}" target="_blank">這台電腦傳的 ↗</a><small>不在這次讀取範圍</small>${more}`;
+  const pos = v.pos != null ? `清單第 ${v.pos + 1} 支 · ` : "";
+  return `<a class="ext" href="https://youtu.be/${esc(v.id)}" target="_blank">${esc(v.title)} ↗</a>
+    <small>${pos}${esc(v.name || "（沒有檔名）")} · ${fmtGb(v.size)} · ${(v.published || "").slice(0, 10)} · ${esc(PRIVACY[v.privacy] || v.privacy || "")}</small>${more}`;
+}
+function renderCompare() {
+  const all = crRes.rows, count = k => all.filter(r => r.kind === k).length;
+  const notIn = r => crRes.target && ["uploaded", "some"].includes(r.kind) && r.video?.title && r.video.pos == null;
+  const nNot = all.filter(notIn).length;
+  $("#crTabs").innerHTML = [["", `全部 ${all.length}`], ...Object.entries(CR_KIND).filter(([k]) => count(k)).map(([k, l]) => [k, `${l} ${count(k)}`]),
+    ...(nNot ? [["notin", `已上傳但不在目標清單 ${nNot}`]] : [])]
+    .map(([k, l]) => `<button class="chip ${crFilter === k ? "on" : ""}" data-k="${k}">${l}</button>`).join("");
+  $("#crTabs").querySelectorAll("button").forEach(b => b.onclick = () => { crFilter = b.dataset.k; renderCompare(); });
+  const listName = crRes.target ? `播放清單「${crRes.target}」順序` : "YouTube 順序";
+  $("#crSort").innerHTML = `排序：<button data-o="local" class="${crOrder === "local" ? "on" : ""}">本地檔案順序</button>
+    <button data-o="list" class="${crOrder === "list" ? "on" : ""}">${esc(listName)}</button>`;
+  $("#crSort").querySelectorAll("button").forEach(b => b.onclick = () => { crOrder = b.dataset.o; renderCompare(); });
+  const rows = crSorted(all.filter(r => !crFilter || (crFilter === "notin" ? notIn(r) : r.kind === crFilter)));
+  $("#crRows").innerHTML = rows.slice(0, CR_MAX).map(r => `<tr>
+    <td><span class="ck ${r.kind}">${CR_KIND[r.kind]}</span>${r.kind === "maybe" ? "<small>檔名相同，大小不同</small>" : ""}</td>
+    <td>${r.local ? `${esc(r.local.title)}<small>${esc(r.local.files.join(" + "))} · ${fmtGb(r.local.size)} · ${esc(r.local.when)}</small>` : ""}</td>
+    <td>${crVideoCell(r)}</td></tr>`).join("");
+  $("#crMore").textContent = rows.length > CR_MAX ? `只顯示前 ${CR_MAX} 筆，共 ${rows.length} 筆；可以用上面的分類縮小範圍。` : "";
+  document.querySelector(".crwrap").scrollTop = 0;
+}
+$("#crClose").onclick = () => $("#dlgCmpResult").close();
 
 const V_ICON = { ok: "✓", bad: "✗", warn: "⚠", info: "ℹ" };
 $("#btnVerify").onclick = async () => {
