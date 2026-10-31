@@ -1114,3 +1114,117 @@ def test_merged_file_goes_to_app_data_when_the_card_folder_is_read_only(tmp_path
     open(out, "wb").close()
     monkeypatch.setattr(merge, "_can_write", lambda folder: True)
     assert merge.merged_path([str(a), str(b)]) == out
+
+
+def test_a_file_the_channel_already_has_is_marked(tmp_path, monkeypatch):
+    from gopro_uploader import app as app_mod
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    monkeypatch.setattr(app_mod, "SAME_SIZE_MIN", 1)
+    api, events, _ = _upload_api(tmp_path, monkeypatch, 1, None)
+    api._yt = "yt"
+    it = api._items[0]
+    assert it["on_channel"] == []
+
+    other = {"id": "OTHER", "title": "以前手動傳的", "size": it["size"], "name": "renamed.mp4", "published": "2023-05-01T00:00:00Z"}
+    monkeypatch.setattr(youtube, "channel_videos", lambda yt: [other, {"id": "NOSIZE", "size": None}])
+    res = api.read_channel()
+    assert [v["id"] for v in res["items"][0]["on_channel"]] == ["OTHER"]
+    assert any("1 段已經傳過" in d.get("msg", "") for k, d in events if k == "log")
+
+    # kept for next time, until another account signs in
+    again = Api("unused.log")
+    assert again._channel[it["size"]][0]["id"] == "OTHER"
+    again._forget_channel()
+    assert Api("unused.log")._channel == {}
+
+
+def test_only_some_chapters_on_the_channel_and_its_own_upload_does_not_count(tmp_path, monkeypatch):
+    from gopro_uploader.app import Api
+    api = Api("unused.log")
+    api._channel = {5_000_000: [{"id": "A"}], 7_000_000: [{"id": "MINE"}]}
+    both = {"status": "pending", "video_ids": [], "sizes": [5_000_000, 7_000_000]}
+    api._attach_channel(both)
+    assert [v["id"] for v in both["on_channel"]] == ["A", "MINE"] and not both["on_channel_some"]
+    some = {"status": "pending", "video_ids": [], "sizes": [5_000_000, 9_000_000]}
+    api._attach_channel(some)
+    assert some["on_channel_some"]
+    own = {"status": "partial", "video_ids": ["MINE"], "sizes": [7_000_000, 9_000_000]}
+    api._attach_channel(own)
+    assert own["on_channel"] == []
+    done = {"status": "uploaded", "video_ids": [], "sizes": [5_000_000]}
+    api._attach_channel(done)
+    assert done["on_channel"] == []
+
+
+def test_small_files_are_not_matched_by_size(tmp_path):
+    from gopro_uploader.app import Api
+    assert Api._index_channel([{"id": "A", "size": 999}, {"id": "B", "size": 2_000_000}]).keys() == {2_000_000}
+
+
+def _verify_api(tmp_path, monkeypatch, playlist, broken=()):
+    from gopro_uploader import youtube
+    api, events, _ = _upload_api(tmp_path, monkeypatch, 3, None)
+    for k, it in enumerate(api._items, 1):
+        api._store.update(it, status="uploaded", video_ids=[f"V{k}"])
+
+    def info(yt, ids):
+        out = {}
+        for vid in ids:
+            if vid in broken or not vid.startswith("V"):
+                continue
+            k = int(vid[1:])
+            out[vid] = {"id": vid, "title": vid, "size": api._items[0]["size"], "name": "", "problem": "",
+                        "upload_status": "processed", "published": f"2025-04-0{k}T00:00:00Z"}
+        return out
+
+    monkeypatch.setattr(youtube, "file_info", info)
+    monkeypatch.setattr(youtube, "playlist_videos", lambda yt, pl: playlist)
+    monkeypatch.setattr(youtube, "fetch_videos", lambda yt, ids: {})
+    return api
+
+
+def test_verify_says_all_is_well(tmp_path, monkeypatch):
+    api = _verify_api(tmp_path, monkeypatch, ["V1", "V2", "V3"])
+    res = api.verify()
+    assert {c["level"] for c in res["checks"]} == {"ok"}
+    texts = " / ".join(c["text"] for c in res["checks"])
+    assert "3 支都在 YouTube 上" in texts and "順序和表格相同" in texts
+
+
+def test_verify_finds_what_is_wrong(tmp_path, monkeypatch):
+    api = _verify_api(tmp_path, monkeypatch, ["V2", "V1", "GONE"], broken={"V3"})
+    res = api.verify()
+    bad = [c["text"] for c in res["checks"] if c["level"] == "bad"]
+    assert any("1 支在 YouTube 上找不到" in t for t in bad)
+    assert any("1 支不在播放清單" in t for t in bad)
+    assert any("順序不對" in t for t in bad)
+    assert any("1 個已刪除" in c["text"] and c["level"] == "warn" for c in res["checks"])
+
+
+def test_verify_compares_each_file_size_but_not_merged_ones(tmp_path, monkeypatch):
+    from gopro_uploader.app import Api
+    api = Api("unused.log")
+    row = dict(title="T", files=["GX010001.MP4"], video_ids=["V1"], sizes=[100], status="uploaded")
+    got = {"V1": {"size": 99, "upload_status": "processed", "problem": ""}}
+    assert any("大小和本機不同" in c["text"] for c in api._verify_videos([row], got))
+    merged = dict(row, files=["GX010001.MP4", "GX020001.MP4"], sizes=[60, 40])
+    checks = api._verify_videos([merged], got)
+    assert not any("大小和本機不同" in c["text"] for c in checks) and "1 段合併過" in checks[0]["text"]
+    assert any(c["level"] == "warn" for c in api._verify_videos(
+        [row], {"V1": {"size": 100, "upload_status": "failed", "problem": "codec"}}))
+
+
+def test_verify_uses_the_playlist_it_was_uploaded_for_not_the_one_picked_now(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    api = _verify_api(tmp_path, monkeypatch, [])
+    for k, it in enumerate(api._items, 1):
+        api._store.append_history(it, f"V{k}", it["title"], "以前的清單")
+    monkeypatch.setattr(youtube, "list_playlists", lambda yt: [{"id": "OLD", "title": "以前的清單"}])
+    asked = []
+    monkeypatch.setattr(youtube, "playlist_videos", lambda yt, pl: asked.append(pl) or ["V1", "V2", "V3"])
+    res = api.verify()
+    assert asked == ["OLD"] and {c["level"] for c in res["checks"]} == {"ok"}
+
+    monkeypatch.setattr(youtube, "list_playlists", lambda yt: [])
+    assert any("找不到播放清單「以前的清單」" in c["text"] for c in api.verify()["checks"])

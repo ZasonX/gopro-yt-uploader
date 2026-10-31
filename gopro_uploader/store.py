@@ -94,6 +94,15 @@ class Store:
                         f"https://youtu.be/{video_id}"])
 
 
+    def playlists_used(self) -> dict[str, str]:
+        """video id -> the name of the playlist it was uploaded for ("" = none), from the history."""
+        try:
+            with _lock, open(config.path("upload_history.csv"), newline="", encoding="utf-8-sig") as f:
+                return {r["video_id"]: r["playlist"] for r in csv.DictReader(f)}
+        except (OSError, KeyError, csv.Error):
+            return {}
+
+
 EXPORT_FILES = ("settings.json", "state.json", "edits.json", "upload_history.csv")
 NEVER_EXPORT = ("token", "client_secret")  # sign-in secrets stay on this PC
 

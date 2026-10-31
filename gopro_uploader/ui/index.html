@@ -89,6 +89,7 @@ a.ext:hover { text-decoration: underline; }
 .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 3px; width: 90px; }
 .bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
 .st.resumable { color: var(--muted); }
+.st.oncopy { color: var(--warn); }
 .st.resumable.restart { color: var(--warn); }
 .bar.paused > div { background: var(--muted); }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
@@ -198,6 +199,13 @@ dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 dialog .full { grid-column: 1 / -1; }
 dialog h2 { margin: 0 0 12px; font-size: 16px; }
 dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+#dlgVerify { width: 640px; }
+.vlist { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.vcheck { display: grid; grid-template-columns: 1.4em 1fr; }
+.vcheck .ic.ok { color: var(--ok); } .vcheck .ic.bad { color: var(--accent); }
+.vcheck .ic.warn { color: var(--warn); } .vcheck .ic.info { color: var(--muted); }
+.vcheck details { grid-column: 2; font-size: 12px; margin-top: 2px; }
+.vcheck details div { padding: 2px 0; }
 .plbtn { min-width: 150px; max-width: 240px; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .plbtn.unset { border-color: var(--accent); color: var(--accent); }
 .pllist { display: flex; flex-direction: column; gap: 4px; max-height: 45vh; overflow: auto; }
@@ -267,6 +275,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <span class="spacer"></span>
     <!-- three groups: rarely used tools | changes to uploaded videos | uploading -->
     <button id="btnTools" title="其他工具：查詢地名、匯出紀錄">⋯</button>
+    <button id="btnVerify" hidden title="檢查這個資料夾傳過的影片：是不是都在 YouTube 上、大小對不對、播放清單和順序對不對。只讀取，不會改任何東西">核對</button>
     <button id="btnPush" hidden title="把已上傳影片在這裡改過的標題 / 說明送到 YouTube（每支約 50 配額單位）">更新到 YouTube</button>
     <span class="sep"></span>
     <button id="btnStopAfter" hidden title="正在傳的傳完後就停止，不再開始新的">傳完正在傳的就停止</button>
@@ -282,6 +291,12 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
   <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
   <div id="log"></div>
 </footer>
+
+<dialog id="dlgVerify">
+  <h2>核對結果</h2>
+  <div id="vList" class="vlist"></div>
+  <div class="btns"><button id="vClose">關閉</button></div>
+</dialog>
 
 <dialog id="dlgPlaylist">
   <h2>選擇播放清單</h2>
@@ -535,8 +550,15 @@ function resumeHtml(it) {  // a stopped upload YouTube still holds
   return `<span class="st resumable${over ? " restart" : ""}" title="${esc(tip)}">已中斷${pct == null ? "" : ` ${pct}%`}${over ? "・會從頭傳" : ""}</span>`
     + (pct == null ? "" : `<div class="bar paused"><div style="width:${pct}%"></div></div>`);
 }
+function onChannelHtml(it) {  // not uploaded from here, but the channel has a video of the exact same size
+  const v = it.on_channel[0], more = it.on_channel.length > 1 ? `（共 ${it.on_channel.length} 支）` : "";
+  const tip = `頻道上有大小完全相同的影片：${v.title}（${(v.published || "").slice(0, 10)}）${more}`;
+  return `<span class="st oncopy" title="${esc(tip)}">${it.on_channel_some ? "部分分段已傳過" : "已傳過"}</span>
+    <a class="ext" href="https://youtu.be/${esc(v.id)}" target="_blank" title="${esc(tip)}">YouTube ↗</a>`;
+}
 function statusHtml(it) {
   if (it.status === "pending" && it.resume) return resumeHtml(it);
+  if (it.on_channel?.length && it.status === "pending") return onChannelHtml(it);
   let h = `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
   if (it.status === "uploading" && it.progress) {
     const p = it.progress, pct = p.total ? (100 * p.done / p.total) : 0;
@@ -562,6 +584,8 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.title_date_mismatch && !ON_YT.includes(i.status) },
   { key: "missing", level: "red", label: "YouTube 上已刪除", tip: "上傳過，但在 YouTube 上找不到了", test: i => i.status === "missing" },
   { key: "error", level: "red", label: "上傳失敗", tip: "滑鼠移到狀態欄的 ⓘ 看原因", test: i => i.status === "error" },
+  { key: "oncopy", level: "yellow", label: "已傳過", tip: "這裡沒有上傳紀錄，但頻道上有大小完全相同的影片，再傳就重複了",
+    test: i => (i.on_channel || []).length > 0 },
   { key: "pending", level: "yellow", label: "待更新到 YouTube", tip: "已上傳的影片在這裡改了標題或說明，還沒送到 YouTube",
     test: i => (i.yt_pending || []).length > 0 },
   { key: "short", level: "yellow", label: "會變成 Shorts", tip: "直式（相機直拿）而且 3 分鐘以內，YouTube 會歸到 Shorts",
@@ -684,7 +708,8 @@ function summary() {
   $("#summary").textContent = items.length
     ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）` : "";
   const vis = visibleItems();
-  $("#chkAll").checked = vis.length > 0 && vis.every(i => i.include);
+  const can = vis.filter(i => !i.on_channel?.length);
+  $("#chkAll").checked = can.length > 0 && can.every(i => i.include);
 }
 function refreshButtons() {
   const has = items.length > 0;
@@ -701,6 +726,7 @@ function refreshButtons() {
   $("#btnStopAfter").textContent = stopAfter ? "取消「傳完就停止」" : "傳完正在傳的就停止";
   $("#selParallel").value = String(S.parallel_uploads || 3);
   const pend = items.filter(i => (i.yt_pending || []).length).length;
+  $("#btnVerify").hidden = !has;
   $("#btnPush").hidden = !pend;
   $("#btnPush").textContent = `更新到 YouTube（${pend} 支）`;
 }
@@ -777,7 +803,8 @@ $("#rows").addEventListener("click", e => {  // the 📂 button on a photo gap r
 }, true);
 $("#chkAll").addEventListener("change", async e => {
   // only the rows shown under the current filter chip
-  setPlan(await call("edit", visibleItems().filter(i => i.status !== "uploaded" || !e.target.checked).map(i => i.id), { include: e.target.checked }));
+  // ticking all skips what the channel already has; those can still be ticked one by one
+  setPlan(await call("edit", visibleItems().filter(i => !e.target.checked || (i.status !== "uploaded" && !i.on_channel?.length)).map(i => i.id), { include: e.target.checked }));
 });
 
 // ------------------------------------------------------------------------- map
@@ -1174,6 +1201,9 @@ async function doScan(folder) {
   busy("掃描中…");
   try { const res = await call("scan", folder); S.last_folder = folder; $("#folder").value = folder; selected.clear(); setPlan(res); }
   finally { busy(null); }
+  // can take a minute on a big channel, so the table comes first and the marks follow
+  const res = await call("read_channel");
+  if (res) setPlan(res);
 }
 $("#btnPick").onclick = async () => { const f = await call("pick_folder"); if (f) doScan(f); };
 $("#btnScan").onclick = () => doScan(S.last_folder);
@@ -1194,7 +1224,8 @@ $("#btnUpload").onclick = async () => {
     + (n > 10 ? `\n…還有 ${n - 10} 段` : "");
   if (!S.playlist_id && !S.no_playlist) { alert("請先在上方「播放清單」選擇要加入的播放清單（或選「不加入播放清單」）。"); $("#btnPlaylist").click(); return; }
   const where = S.playlist_id ? `，並加入播放清單「${S.playlist}」` : "（不加入播放清單）";
-  if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？\n\n${names}`)) return;
+  const copies = list.filter(i => i.on_channel?.length).length;
+  if (!confirm(`要上傳下面這 ${n} 段錄影${where}嗎？${copies ? `\n\n⚠ 其中 ${copies} 段頻道上已經有了，再傳就重複了。` : ""}\n\n${names}`)) return;
   upTotal = n; upDone = 0;
   upBytesTotal = list.reduce((a, i) => a + i.size, 0); upBytesDone = 0; upSamples = []; upSent = 0;
   for (const k in itemSamples) delete itemSamples[k];
@@ -1215,6 +1246,19 @@ $("#btnPush").onclick = async () => {
   busy("更新到 YouTube…");
   try { setPlan(await call("push_to_youtube")); } finally { busy(null); }
 };
+
+const V_ICON = { ok: "✓", bad: "✗", warn: "⚠", info: "ℹ" };
+$("#btnVerify").onclick = async () => {
+  busy("核對中…");
+  let res;
+  try { res = await call("verify"); } finally { busy(null); }
+  $("#vList").innerHTML = res.checks.map(c => `<div class="vcheck"><span class="ic ${c.level}">${V_ICON[c.level]}</span><span>${esc(c.text)}</span>
+    ${c.rows.length ? `<details ${c.rows.length <= 5 ? "open" : ""}><summary>${c.rows.length} 筆</summary>${c.rows.map(r =>
+      `<div>${r.url ? `<a class="ext" href="${esc(r.url)}" target="_blank">${esc(r.label)} ↗</a>` : esc(r.label)}${r.note ? `：${esc(r.note)}` : ""}</div>`).join("")}</details>` : ""}</div>`).join("");
+  setPlan(res.plan);
+  $("#dlgVerify").showModal();
+};
+$("#vClose").onclick = () => $("#dlgVerify").close();
 
 $("#btnSignIn").onclick = async () => {
   if (!INIT.has_secret) { log("請先到「設定」匯入 Google Cloud 下載的 client_secret.json（步驟見 README）", "error"); openSettings(); return; }

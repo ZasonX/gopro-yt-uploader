@@ -203,6 +203,47 @@ def fetch_videos(yt, video_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+def file_info(yt, video_ids: list[str]) -> dict[str, dict]:
+    """Original file size and name and YouTube's processing state (1 quota unit per 50).
+
+    fileDetails is only given to the video's owner. Uploads through this API have no file name,
+    but the size is the exact byte count of the file sent. Missing ids are left out."""
+    out = {}
+    ids = list(dict.fromkeys(video_ids))
+    for k in range(0, len(ids), 50):
+        r = _execute(yt.videos().list(id=",".join(ids[k:k + 50]), part="snippet,status,fileDetails", maxResults=50))
+        for v in r.get("items", []):
+            sn, st, fd = v.get("snippet", {}), v.get("status", {}), v.get("fileDetails", {})
+            out[v["id"]] = {
+                "id": v["id"], "title": sn.get("title", ""), "published": sn.get("publishedAt", ""),
+                "size": int(fd["fileSize"]) if fd.get("fileSize") else None, "name": fd.get("fileName", ""),
+                "privacy": st.get("privacyStatus"), "upload_status": st.get("uploadStatus"),
+                "problem": st.get("failureReason") or st.get("rejectionReason") or "",
+            }
+    return out
+
+
+def channel_videos(yt) -> list[dict]:
+    """Every video on the signed-in channel, see file_info (about 2 quota units per 50 videos)."""
+    r = _execute(yt.channels().list(part="contentDetails", mine=True))
+    items = r.get("items", [])
+    if not items:
+        return []
+    uploads = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    return list(file_info(yt, playlist_videos(yt, uploads)).values())
+
+
+def playlist_videos(yt, playlist_id: str) -> list[str]:
+    """The video ids in a playlist, in its order (1 quota unit per 50)."""
+    out = []
+    req = yt.playlistItems().list(part="contentDetails", playlistId=playlist_id, maxResults=50)
+    while req is not None:
+        resp = _execute(req)
+        out += [i["contentDetails"]["videoId"] for i in resp.get("items", [])]
+        req = yt.playlistItems().list_next(req, resp)
+    return out
+
+
 def service_copy(yt):
     """A separate service object for another upload thread (httplib2 is not thread-safe)."""
     return build("youtube", "v3", credentials=yt._http.credentials, cache_discovery=False)

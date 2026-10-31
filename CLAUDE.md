@@ -56,6 +56,11 @@ While uploading, the worker re-reads each queued recording from `self._items` wh
 
 Sign-in expiry (7 days while the Cloud app is "testing"): `youtube.SignedOut` (RefreshError / 401, never plain network errors) → `Api._signed_out()` drops the dead token, tells the user once, flips the account button to 「重新登入」; uploads re-open the browser sign-in and retry the current recording; the window re-checks on focus (≤ every 5 min).
 
+### Already on the channel, and 核對
+After a scan the UI calls `Api.read_channel` (the table comes first; about 2 quota units per 50 videos, about 10 s per 1,000 videos): `youtube.channel_videos` reads the uploads playlist with `fileDetails`, saved in `channel.json` (dropped on sign-in / sign-out, another account may be next). `_attach_channel` marks a row `on_channel` when a video there has the exact byte size of its file (`on_channel_some` when only some chapters match; 1 MB minimum): this finds renamed copies and hand uploads, which `state.json` can't. API uploads have no `fileName`, only hand uploads do, so the size is the key. A merged upload's size differs from its chapters, so those aren't recognized. Marked rows are skipped by tick-all, can be ticked one by one, and the upload confirm warns. API has no draft state, and an unfinished upload may not be listed at all.
+
+`Api.verify` (核對 button, read-only) reports for the scanned folder: counts, every uploaded video exists and is processed, byte size equals the local file (not for merged), it is in the playlist **it was uploaded for** (name from `upload_history.csv`, not the one picked now), playlist order and `publishedAt` order follow the table, and dead playlist entries.
+
 ## Conventions
 - Keep it dependency-light: pure-Python parsing, no ffprobe requirement.
 - Never commit `client_secret*.json` or `token*.json` (both are in `.gitignore`; they live in app data anyway).

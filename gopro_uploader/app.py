@@ -37,6 +37,8 @@ CLOSE_WAIT = 20  # seconds to let uploads stop and save their place when the win
 # while waiting for the quota, try again this often: the reset time is Google's word for the API
 # quota, not something seen for the channel's upload limit (it could be a rolling window)
 QUOTA_PROBE = timedelta(hours=1)
+CHANNEL_FILE = "channel.json"  # the channel's videos as last read, to mark what is already there
+SAME_SIZE_MIN = 1_000_000  # smaller files can share a size by chance
 
 
 def _resume_sig(path: str, size: int, idx: int, body: dict) -> str:
@@ -91,6 +93,7 @@ class Api:
         # let in a moment later would land in Studio before it
         self._quota_hit = threading.Event()
         self._closed = False  # window gone: nothing to send events to
+        self._channel = self._load_channel()  # file size -> the channel's videos of that size
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -113,6 +116,7 @@ class Api:
             if it["id"] in self._uploading_ids and it["status"] != "uploaded":
                 it["status"] = "uploading"
             self._attach_youtube(it)
+            self._attach_channel(it)
             it["resume"] = self._resume_info(it) if it["status"] not in ("uploaded", "uploading") else None
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items, "recent_places": self._settings.recent_places,
@@ -181,6 +185,183 @@ class Api:
             it["description"] = live[0].get("description", "")
         it["yt_place"] = live[0].get("place") or ""
         it["yt_has_location"] = live[0].get("lat") is not None
+
+    # ------------------------------------------------- already on the channel?
+    @staticmethod
+    def _index_channel(videos: list[dict]) -> dict[int, list[dict]]:
+        index: dict[int, list[dict]] = {}
+        for v in videos:
+            if (v.get("size") or 0) >= SAME_SIZE_MIN:
+                index.setdefault(v["size"], []).append(v)
+        return index
+
+    def _load_channel(self) -> dict[int, list[dict]]:
+        try:
+            with open(config.path(CHANNEL_FILE), encoding="utf-8") as f:
+                return self._index_channel(json.load(f)["videos"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return {}
+
+    def _forget_channel(self):
+        """Another account may sign in next: its channel is not this one."""
+        self._channel = {}
+        try:
+            os.remove(config.path(CHANNEL_FILE))
+        except OSError:
+            pass
+
+    def _attach_channel(self, it):
+        """A file with the exact size of a video on the channel was uploaded before, even under
+        another name or by hand. A merge changes the size, so those can't be recognized."""
+        it["on_channel"], it["on_channel_some"] = [], False
+        if it["status"] not in ("pending", "error", "missing", "partial"):
+            return
+        own = set(it["video_ids"])
+        hits = [[v for v in self._channel.get(size, []) if v["id"] not in own] for size in it.get("sizes", [])]
+        if any(hits):
+            it["on_channel"] = list({v["id"]: v for found in hits for v in found}.values())
+            it["on_channel_some"] = not all(hits)
+
+    def read_channel(self):
+        """Read the channel's videos after a scan, to mark what is already there. None if it can't."""
+        if not self._yt:
+            self._say("沒有登入 YouTube，所以沒有和頻道比對，看不出哪些已經傳過")
+            return None
+        self._say("正在和頻道上的影片比對…")
+        try:
+            videos = youtube.channel_videos(youtube.service_copy(self._yt))
+        except youtube.SignedOut as e:
+            self._signed_out(e)
+            return None
+        except Exception as e:  # noqa: BLE001 - offline, quota: the last copy stays in use
+            log.warning("could not read the channel: %s", e)
+            self._say("無法讀取頻道上的影片，先用上次比對的結果", "error")
+            return None
+        with open(config.path(CHANNEL_FILE), "w", encoding="utf-8") as f:
+            json.dump({"read_at": datetime.now().isoformat(timespec="minutes"), "videos": videos}, f, ensure_ascii=False)
+        self._channel = self._index_channel(videos)
+        res = self._replan()
+        n = sum(bool(it["on_channel"]) for it in self._items)
+        self._say(f"比對完成：頻道上有 {len(videos)} 支影片，這個資料夾有 {n} 段已經傳過" if n
+                  else f"比對完成：頻道上有 {len(videos)} 支影片，這個資料夾沒有已經傳過的")
+        return res
+
+    # ---------------------------------------------------------- 核對
+    def verify(self):
+        """Is what this folder uploaded really there, whole, and in order? Only reads."""
+        self._replan()
+        uploaded = [it for it in self._items if it["status"] in ("uploaded", "partial") and it.get("video_ids")]
+        checks = [self._verify_counts()]
+        if uploaded:
+            checks += self._with_sign_in(lambda yt: self._verify_uploaded(youtube.service_copy(yt), uploaded))
+            self._sync_youtube()
+        bad = sum(c["level"] == "bad" for c in checks)
+        self._say(f"核對完成：{bad} 項有問題" if bad else "核對完成：沒有發現問題")
+        return {"checks": checks, "plan": self._replan()}
+
+    def _verify_uploaded(self, yt, uploaded):
+        got = youtube.file_info(yt, [v for it in uploaded for v in it["video_ids"]])
+        return [*self._verify_videos(uploaded, got), *self._verify_playlist(yt, uploaded),
+                self._verify_order(uploaded, got)]
+
+    @staticmethod
+    def _row(it, vid=None):
+        return {"label": f"{it['title']}（{' + '.join(it['files'])}）",
+                "url": f"https://studio.youtube.com/video/{vid}/edit" if vid else ""}
+
+    def _verify_counts(self):
+        items = self._items
+        up = sum(it["status"] == "uploaded" for it in items)
+        left = [it for it in items if it["status"] != "uploaded"]
+        text = f"這個資料夾 {len(items)} 段錄影：已上傳 {up} 段，還沒傳 {len(left)} 段"
+        known = sum(bool(it["on_channel"]) and not it["on_channel_some"] for it in left)
+        if known:
+            text += f"（其中 {known} 段頻道上已經有了）"
+        return {"level": "ok" if not left else "info", "text": text, "rows": []}
+
+    def _verify_videos(self, uploaded, got):
+        gone, stuck, differ, merged = [], [], [], 0
+        for it in uploaded:
+            sizes = it["sizes"] if len(it["sizes"]) == len(it["video_ids"]) else None
+            merged += sizes is None
+            for n, vid in enumerate(it["video_ids"]):
+                v = got.get(vid)
+                if not v:
+                    gone.append(self._row(it, vid))
+                    continue
+                if v["upload_status"] != "processed":
+                    stuck.append({**self._row(it, vid), "note": v["problem"] or v["upload_status"] or ""})
+                if sizes and v["size"] and v["size"] != sizes[n]:
+                    differ.append(self._row(it, vid))
+        n = sum(len(it["video_ids"]) for it in uploaded)
+        same = f"，大小和本機相同（{merged} 段合併過的不比大小）" if merged else "，大小和本機相同"
+        return [
+            {"level": "bad", "text": f"{len(gone)} 支在 YouTube 上找不到（可能已刪除），可以重新勾選上傳", "rows": gone} if gone
+            else {"level": "ok", "text": f"{n} 支都在 YouTube 上" + ("" if differ else same), "rows": []},
+            *([{"level": "bad", "text": f"{len(differ)} 支的大小和本機不同，可能不是同一個檔案", "rows": differ}] if differ else []),
+            *([{"level": "warn", "text": f"{len(stuck)} 支 YouTube 還沒處理好（剛傳完的要等一下；失敗的要重傳）", "rows": stuck}] if stuck else []),
+        ]
+
+    def _verify_playlist(self, yt, uploaded):
+        """Against the playlist each video was uploaded for, not the one picked right now."""
+        s, used = self._settings, self._store.playlists_used()
+        groups: dict[str, list] = {}
+        for it in uploaded:
+            name = used.get(it["video_ids"][0], s.playlist if s.playlist_id else "")
+            if name:
+                groups.setdefault(name, []).append(it)
+        if not groups:
+            return [{"level": "info", "text": "這些影片上傳時沒有選播放清單，所以沒有核對", "rows": []}]
+        others = [] if set(groups) <= {s.playlist} else youtube.list_playlists(yt)
+        checks = []
+        for name, its in groups.items():
+            pid = s.playlist_id if name == s.playlist and s.playlist_id else next(
+                (p["id"] for p in others if p["title"] == name), None)
+            checks += (self._verify_one_playlist(yt, pid, f"播放清單「{name}」", its) if pid else
+                       [{"level": "bad", "text": f"找不到播放清單「{name}」，可能改名或刪除了，裡面的 {len(its)} 段沒有核對", "rows": []}])
+        return checks
+
+    def _verify_one_playlist(self, yt, playlist_id, name, uploaded):
+        try:
+            ids = youtube.playlist_videos(yt, playlist_id)
+            alive = youtube.file_info(yt, ids)
+        except youtube.SignedOut:
+            raise
+        except Exception as e:  # noqa: BLE001 - e.g. deleted: the other checks still count
+            log.warning("could not read the playlist: %s", e)
+            return [{"level": "bad", "text": f"讀不到{name}，可能已刪除", "rows": []}]
+        where = {v: k for k, v in enumerate(ids)}
+        out_rows, positions = [], []
+        for it in uploaded:
+            for vid in it["video_ids"]:
+                if vid in where:
+                    positions.append((where[vid], it))
+                else:
+                    out_rows.append(self._row(it, vid))
+        waiting = sum(bool((self._store.lookup(it) or {}).get("playlist_add")) for it in uploaded)
+        dead = [v for v in ids if v not in alive]
+        wrong = next((it for (p, _), (q, it) in zip(positions, positions[1:]) if q < p), None)
+        checks = []
+        if out_rows:
+            note = f"（{waiting} 段在等下次上傳時補加入）" if waiting else ""
+            checks.append({"level": "bad" if not waiting else "warn",
+                           "text": f"{len(out_rows)} 支不在{name}{note}", "rows": out_rows})
+        else:
+            checks.append({"level": "ok", "text": f"都在{name}裡（清單共 {len(ids)} 支）", "rows": []})
+        checks.append({"level": "bad", "text": f"{name}的順序不對，從這段開始和表格不同", "rows": [self._row(wrong)]} if wrong
+                      else {"level": "ok", "text": f"{name}的順序和表格相同", "rows": []})
+        if dead:
+            checks.append({"level": "warn", "text": f"{name}裡有 {len(dead)} 個已刪除或看不到的影片，要到 YouTube 上移除",
+                           "rows": [{"label": v, "url": f"https://www.youtube.com/playlist?list={playlist_id}"} for v in dead[:20]]})
+        return checks
+
+    @staticmethod
+    def _verify_order(uploaded, got):
+        """Studio lists by upload time, which videos.list gives to the second."""
+        seen = [(got[it["video_ids"][0]]["published"], it) for it in uploaded if it["video_ids"][0] in got]
+        wrong = [Api._row(it, it["video_ids"][0]) for (a, _), (b, it) in zip(seen, seen[1:]) if b < a]
+        return ({"level": "warn", "text": f"上傳時間的順序和表格不同的有 {len(wrong)} 處（Studio 依這個時間排序）", "rows": wrong} if wrong
+                else {"level": "ok", "text": "上傳時間的順序和表格相同", "rows": []})
 
     def _sync_youtube(self):
         uploaded = [it for it in self._items if it["status"] in ("uploaded", "partial") and it.get("video_ids")]
@@ -556,6 +737,7 @@ class Api:
 
     def sign_in(self):
         youtube.sign_out()  # 登入 / 重新登入 / 切換帳號 always go through the browser
+        self._forget_channel()
         self._yt = youtube.get_service(interactive=True)
         self._told_signed_out = False
         name = youtube.channel_title(self._yt)
@@ -565,6 +747,7 @@ class Api:
     def sign_out(self):
         youtube.sign_out()
         self._yt = None
+        self._forget_channel()
         return True
 
     def export_logs(self):
