@@ -1,14 +1,23 @@
-"""User settings and app data paths (%APPDATA%\\GoProYTUploader)."""
+"""User settings and app data paths (%APPDATA%\\GoProYTUploader on Windows)."""
 from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 
 
+def _data_root() -> str:
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        return os.environ.get("APPDATA", home)
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support")
+    return os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
+
+
 def app_dir() -> str:
-    base = os.environ.get("GOPRO_YT_HOME") or os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")), "GoProYTUploader")
+    base = os.environ.get("GOPRO_YT_HOME") or os.path.join(_data_root(), "GoProYTUploader")
     os.makedirs(base, exist_ok=True)
     return base
 

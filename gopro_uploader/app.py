@@ -858,11 +858,11 @@ class Api:
         return p if os.path.isfile(p) else None
 
     def reveal_file(self, item_id: str, index: int = 0):
-        """Open Explorer at the file's folder with the file selected."""
+        """Open the file manager at the file's folder with the file selected."""
         p = self._scanned_file(item_id, index)
         if not p:
             return False
-        subprocess.Popen(["explorer", f"/select,{os.path.normpath(p)}"])  # noqa: S603,S607
+        subprocess.Popen(reveal_command(p))  # noqa: S603
         return True
 
     def _scanned_photo(self, folder: str, name: str) -> str | None:
@@ -876,14 +876,14 @@ class Api:
         p = self._scanned_photo(folder, name)
         if not p:
             return False
-        subprocess.Popen(["explorer", f"/select,{os.path.normpath(p)}"])  # noqa: S603,S607
+        subprocess.Popen(reveal_command(p))  # noqa: S603
         return True
 
     def open_photo(self, folder: str, name: str):
         p = self._scanned_photo(folder, name)
         if not p:
             return False
-        os.startfile(p)  # noqa: S606 - Windows only, user-initiated
+        open_with_default_app(p)
         return True
 
     def open_original(self, item_id: str, index: int = 0):
@@ -891,14 +891,14 @@ class Api:
         p = self._scanned_file(item_id, index)
         if not p:
             return False
-        os.startfile(p)  # noqa: S606 - Windows only, user-initiated
+        open_with_default_app(p)
         return True
 
     def open_path(self, which: str):
         target = {"data": config.app_dir(), "log": self._log_file,
                   "history": config.path("upload_history.csv")}.get(which)
         if target and os.path.exists(target):
-            os.startfile(target)  # noqa: S606 - Windows only, user-initiated
+            open_with_default_app(target)
             return True
         return False
 
@@ -1352,8 +1352,28 @@ def main():
     os._exit(0)
 
 
+def reveal_command(path: str, platform: str = sys.platform) -> list[str]:
+    """The command that shows a file selected in the system's file manager."""
+    if platform == "win32":
+        return ["explorer", f"/select,{os.path.normpath(path)}"]
+    if platform == "darwin":
+        return ["open", "-R", path]
+    return ["xdg-open", os.path.dirname(path)]  # Linux file managers have no common "select"
+
+
+def open_with_default_app(path: str) -> None:
+    """Open a file or folder the way a double-click would (user-initiated only)."""
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])  # noqa: S603,S607
+
+
 def _ask_yes_no(window, text: str) -> bool:
-    """A Windows message box owned by the window (No is the default button)."""
+    """A Windows message box owned by the window (No is the default button);
+    pywebview's own dialog elsewhere (Mac / Linux: not tried on a real machine)."""
+    if sys.platform != "win32":
+        return bool(window.create_confirmation_dialog(WINDOW_TITLE, text))
     try:
         hwnd = window.native.Handle.ToInt32()
     except Exception:  # noqa: BLE001 - no handle: a task-modal box works too

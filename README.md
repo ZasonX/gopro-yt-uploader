@@ -17,13 +17,23 @@
 
 拍攝地點不會送出，YouTube 已經不接受用程式設定（見「已知限制」）。
 
+## 支援的系統
+
+| 系統 | 狀態 |
+|---|---|
+| Windows 10 / 11 | 實際使用過 |
+| Mac（Apple 晶片：M1 以後） | 有打包，自動測試會過，**但沒有人實際開起來用過** |
+| Linux（x86-64） | 有打包，自動測試會過，**但沒有人實際開起來用過** |
+
+Mac / Linux 版是照 Windows 版改的：檔案總管換成 Finder / 系統的檔案管理員，工作列進度條在這兩個系統上沒有。視窗、登入、上傳、合併分段理論上一樣，但可能有沒發現的問題，碰到請到 [Issues](https://github.com/ZasonX/gopro-yt-uploader/issues) 回報。
+
 ## 特色
 
 - **分段自動合併**：GoPro 長片被切成 `GX01xxxx`、`GX02xxxx`… 的分段，會自動認成同一段錄影，用 ffmpeg 無損合併成一支再上傳（可關閉，改成分開上傳並加上 `(1/3)` 編號）。
 - **時間自動校正**：依影片內的 GPS 時間和檔案時間，判斷每段錄影當時的時區，標題用當地時間。相機時鐘被重設的影片，會依檔案編號推測日期，標題只放日期。
 - **地點參考**：有 GPS 的影片用座標查出地名；沒有 GPS 的，沿用 3 小時內最接近那段的位置（標示為「推測」）。也可以在地圖上點選，或搜尋地名。地名可以複製，貼到 Studio 的「影片地點」搜尋。
 - **同時上傳多支，順序不亂**：YouTube 每支只給約 3.5 MB/s，所以預設同時傳 3 支（可選 1–8）。完成順序和播放清單順序都會照表格，Studio 內容列表的順序也就跟著對。
-- **不重複上傳**：上傳紀錄存在 `%APPDATA%\GoProYTUploader\state.json`，重新掃描時已上傳的會自動取消勾選。另外會寫一份 `upload_history.csv`（可用 Excel 開），每支影片附 YouTube 連結。
+- **不重複上傳**：上傳紀錄存在程式資料夾的 `state.json`（位置見「第一次設定」第 4 步），重新掃描時已上傳的會自動取消勾選。另外會寫一份 `upload_history.csv`（可用 Excel 開），每支影片附 YouTube 連結。
 - **和 YouTube 比對**：想知道資料夾裡哪些已經傳過（包括手動上傳、複製過的檔案），可以按「和 YouTube 比對…」。掃描資料夾時不會讀你的頻道，要按了、選好範圍才會讀。
 - **核對**：傳完後按「核對」，檢查影片是否都在 YouTube 上、大小和播放清單順序對不對。只讀取，不會改任何東西。
 - **傳完再改**：已上傳的影片可以在程式裡改標題和說明，再一次送到 YouTube。
@@ -58,13 +68,20 @@
 
 ### 4. 在程式裡匯入
 
-1. 到 [Releases](https://github.com/ZasonX/gopro-yt-uploader/releases) 下載最新的 zip，解壓縮後雙擊 `GoProYTUploader` 資料夾裡的 `GoProYTUploader.exe`，不用另外安裝 Python。
-   - 第一次執行時，Windows SmartScreen 可能會顯示「Windows 已保護您的電腦」，按「其他資訊 → 仍要執行」即可。原因是這個程式沒有付費的程式碼簽章。
-   - 整個資料夾要放在一起，不能只把 exe 單獨複製出來。
+1. 到 [Releases](https://github.com/ZasonX/gopro-yt-uploader/releases) 下載最新版，不用另外安裝 Python。程式沒有付費的程式碼簽章，所以第一次開啟時系統會警告。
+   - **Windows**（`…-windows.zip`）：解壓縮後雙擊 `GoProYTUploader` 資料夾裡的 `GoProYTUploader.exe`。SmartScreen 顯示「Windows 已保護您的電腦」時，按「其他資訊 → 仍要執行」。整個資料夾要放在一起，不能只把 exe 單獨複製出來。
+   - **Mac**（`…-mac.zip`）：解壓縮後把 `GoProYTUploader.app` 拖到「應用程式」。第一次開啟被擋下時，到「系統設定 → 隱私權與安全性」，在下方按「強制打開」。
+   - **Linux**（`…-linux.tar.gz`）：解壓縮後執行 `GoProYTUploader/GoProYTUploader`。如果視窗開不起來，可能要用套件管理員補裝 Qt 需要的系統函式庫（例如 Ubuntu 的 `libxcb-cursor0`）。
 2. 按「設定 → 匯入 client_secret.json」，選剛剛下載的檔案。
 3. 按右上角「登入」，在跳出的瀏覽器頁面登入 Google，並允許存取。
 
-憑證和登入資訊只存在 `%APPDATA%\GoProYTUploader`，不會進到 git。
+憑證、登入資訊和上傳紀錄只存在自己電腦的程式資料夾，不會進到 git：
+
+| 系統 | 位置 |
+|---|---|
+| Windows | `%APPDATA%\GoProYTUploader` |
+| Mac | `~/Library/Application Support/GoProYTUploader` |
+| Linux | `~/.local/share/GoProYTUploader` |
 
 ## 平常使用
 
@@ -77,6 +94,7 @@
 
 ## 已知限制
 
+- **Mac / Linux 版沒有實際用過**：見上方「支援的系統」。
 - **登入約 7 天失效**：專案在「測試中」狀態時才有這個限制，改法見上方第 2 步。失效後按右上角「重新登入」，影片和上傳紀錄都不受影響。
 - **每日上傳上限**：除了配額單位，YouTube 還限制每天能傳幾支，數字沒有公布。實際碰過的是頻道一天約 80 支、Cloud 專案一天 88 支。碰到時程式會等到隔天再繼續，電腦要開著；也可以按停止，之後再接著傳。
 - **每日配額**：預設每天 10,000 單位。依 Google 2025-12 的修訂紀錄，每上傳一支影片約用 100 單位（以前是 1,600），請以 Cloud Console 的配額頁面為準。配額在太平洋時間午夜重置（台灣時間下午 3 點或 4 點）。
@@ -90,13 +108,16 @@
 需要 Python 3.10 以上版本。
 
 ```bash
-run.bat                                        # 從原始碼執行（第一次會建立 .venv 並安裝套件）
+run.bat                                        # Windows：從原始碼執行（第一次會建立 .venv 並安裝套件）
 .venv\Scripts\python.exe -m pytest -q          # 測試（會自己產生假的 GoPro MP4）
 .venv\Scripts\python.exe -m gopro_uploader --debug   # 開啟視窗並啟用開發者工具
-build.bat                                      # 打包成 dist\GoProYTUploader\GoProYTUploader.exe
+build.bat                                      # Windows：打包成 dist\GoProYTUploader\GoProYTUploader.exe
+python packaging/build.py                      # 任何系統：打包成該系統的版本（先裝 requirements-build.txt）
 ```
 
-`build.bat` 使用 PyInstaller，產生的是資料夾形式，約 116 MB，其中 ffmpeg 佔大部分。發布時把 `dist\GoProYTUploader` 整個資料夾壓縮成 zip 即可。圖示由 `packaging/make_icon.py` 產生。
+打包使用 PyInstaller，只能打包出執行它那個系統的版本，產生的是資料夾形式（Windows 約 116 MB，其中 ffmpeg 佔大部分）。圖示由 `packaging/make_icon.py` 產生，目前只有 Windows 版有圖示。
+
+發布：推一個 `v` 開頭的標籤（例如 `git tag v0.2.0` 再 `git push origin v0.2.0`），GitHub Actions 會在 Windows、Mac、Linux 各跑一次測試並打包，再把成功的版本放到 Releases（`.github/workflows/release.yml`）。
 
 程式結構：
 

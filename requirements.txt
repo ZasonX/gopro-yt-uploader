@@ -1,4 +1,6 @@
-pywebview>=6.0
+pywebview>=6.0; sys_platform != "linux"
+# Linux has no built-in web view pywebview can use without system packages; Qt comes from pip
+pywebview[qt]>=6.0; sys_platform == "linux"
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 tzdata

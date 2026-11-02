@@ -1,4 +1,5 @@
-# Pushing a tag like v0.1.0 tests, builds the exe on GitHub's Windows machine and publishes a Release.
+# Pushing a tag like v0.1.0 tests and builds on GitHub's Windows, Mac and Linux machines,
+# then publishes a Release with what built. Only the Windows version has been tried for real.
 name: Release
 
 on:
@@ -9,8 +10,18 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: mac
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,16 +29,34 @@ jobs:
           python-version: "3.10"
       - name: Install
         run: |
-          python -m venv .venv
-          .venv\Scripts\python.exe -m pip install -q -r requirements.txt
+          python -m pip install -q -r requirements-build.txt
       - name: Test
-        run: .venv\Scripts\python.exe -m pytest -q
+        run: python -m pytest -q
       - name: Build
-        shell: cmd
-        run: build.bat
-      - name: Zip
-        run: Compress-Archive -Path dist\GoProYTUploader -DestinationPath "GoProYTUploader-$env:GITHUB_REF_NAME.zip"
+        run: python packaging/build.py
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist\GoProYTUploader -DestinationPath "GoProYTUploader-$env:GITHUB_REF_NAME-windows.zip"
+      - name: Zip (Mac)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/GoProYTUploader.app "GoProYTUploader-$GITHUB_REF_NAME-mac.zip"
+      - name: Zip (Linux)
+        if: runner.os == 'Linux'
+        run: tar -czf "GoProYTUploader-$GITHUB_REF_NAME-linux.tar.gz" -C dist GoProYTUploader
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: GoProYTUploader-*
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }}  # publish what built even if one system failed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" "GoProYTUploader-$env:GITHUB_REF_NAME.zip" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" GoProYTUploader-* --repo "$GITHUB_REPOSITORY" --generate-notes

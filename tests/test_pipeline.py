@@ -889,9 +889,21 @@ def test_refresh_after_upload_reads_youtube_even_if_items_went_stale(tmp_path):
     assert up["include"] is False
 
 
+def test_reveal_and_app_data_follow_the_system(monkeypatch):
+    from gopro_uploader.app import reveal_command
+    p = os.path.join("x", "GX010001.MP4")
+    assert reveal_command(p, "win32") == ["explorer", f"/select,{os.path.normpath(p)}"]
+    assert reveal_command(p, "darwin") == ["open", "-R", p]
+    assert reveal_command(p, "linux") == ["xdg-open", "x"]
+    monkeypatch.delenv("GOPRO_YT_HOME")
+    monkeypatch.setattr(config, "_data_root", lambda: "ROOT")
+    monkeypatch.setattr(os, "makedirs", lambda *a, **k: None)
+    assert config.app_dir() == os.path.join("ROOT", "GoProYTUploader")
+
+
 def test_only_scanned_files_can_be_opened_or_revealed(tmp_path, monkeypatch):
     import subprocess
-    from gopro_uploader.app import Api
+    from gopro_uploader.app import Api, reveal_command
     make_mp4(tmp_path / "GX010001.MP4", CAM, 4.0, [])
     make_mp4(tmp_path / "GX020001.MP4", CAM, 4.0, [])
     api = Api("unused.log")
@@ -899,7 +911,7 @@ def test_only_scanned_files_can_be_opened_or_revealed(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr(subprocess, "Popen", lambda args, **k: ran.append(args))
     assert api.reveal_file(key, 1) is True
-    assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GX020001.MP4'))}"]]
+    assert ran == [reveal_command(str(tmp_path / "GX020001.MP4"))]
     assert api.reveal_file(key, 5) is False and api.reveal_file("not-a-key") is False
     assert api.open_original(str(tmp_path / "GX010001.MP4")) is False  # a path is not an id
 
@@ -1041,7 +1053,7 @@ def test_taskbar_never_drives_another_process_window():
 
 def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
     import subprocess
-    from gopro_uploader.app import Api
+    from gopro_uploader.app import Api, reveal_command
     make_mp4(tmp_path / "GX010804.MP4", CAM, 4.0, [])
     (tmp_path / "GOPR0805.JPG").write_bytes(b"jpg")
     (tmp_path / "secret.txt").write_text("x")
@@ -1050,7 +1062,7 @@ def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr(subprocess, "Popen", lambda args, **k: ran.append(args))
     assert api.reveal_photo(str(tmp_path), "GOPR0805.JPG") is True
-    assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GOPR0805.JPG'))}"]]
+    assert ran == [reveal_command(str(tmp_path / "GOPR0805.JPG"))]
     assert api.reveal_photo(str(tmp_path), "secret.txt") is False
     assert api.open_photo(str(tmp_path), r"..\secret.txt") is False
 

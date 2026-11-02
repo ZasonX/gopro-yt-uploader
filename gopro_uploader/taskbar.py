@@ -48,6 +48,8 @@ class Taskbar:
     def _window(self):
         """This process's window with that title. Another copy of the app (or the tests, while
         the real app is open) must not drive that one's button."""
+        if not self._ok():
+            return None
         if not self._hwnd:
             user32 = ctypes.windll.user32
             user32.FindWindowExW.restype = ctypes.c_void_p
