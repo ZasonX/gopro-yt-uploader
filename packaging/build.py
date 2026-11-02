@@ -26,8 +26,10 @@ if sys.platform == "win32":  # a Mac .app wants .icns; without Pillow PyInstalle
 subprocess.run(args + sys.argv[1:] + [os.path.join("packaging", "entry.py")], check=True)
 dist = sys.argv[sys.argv.index("--distpath") + 1] if "--distpath" in sys.argv else "dist"
 
-# googleapiclient ships ~100 MB of discovery docs for every Google API; keep only YouTube
-for f in glob.glob(os.path.join(dist, "**", "discovery_cache", "documents", "*.json"), recursive=True):
-    if os.path.basename(f) != "youtube.v3.json":
+# googleapiclient ships ~100 MB of discovery docs for every Google API; keep only YouTube.
+# A Mac .app reaches the same folder through a symlink too, so each file is listed twice.
+docs = glob.glob(os.path.join(dist, "**", "discovery_cache", "documents", "*.json"), recursive=True)
+for f in {os.path.realpath(p) for p in docs}:
+    if os.path.basename(f) != "youtube.v3.json" and os.path.exists(f):
         os.remove(f)
 print("built", os.path.join(dist, "GoProYTUploader.app" if sys.platform == "darwin" else "GoProYTUploader"))
