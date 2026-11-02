@@ -23,8 +23,8 @@ jobs:
             name: linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.10"
       - name: Install
@@ -43,7 +43,7 @@ jobs:
       - name: Zip (Linux)
         if: runner.os == 'Linux'
         run: tar -czf "GoProYTUploader-$GITHUB_REF_NAME-linux.tar.gz" -C dist GoProYTUploader
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: GoProYTUploader-*
@@ -53,7 +53,7 @@ jobs:
     if: ${{ !cancelled() }}  # publish what built even if one system failed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: Publish
