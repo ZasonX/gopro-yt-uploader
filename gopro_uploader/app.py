@@ -317,7 +317,10 @@ class Api:
             rows.append({"kind": kind, "video": found[0] if found else None, "more": max(0, len(found) - 1),
                          "local": {"id": it["id"], "title": it["title"], "files": it["files"], "size": it["size"],
                                    "when": it["local"][:16]}})
-        rows += [{"kind": "only", "video": v, "more": 0, "local": None} for v in videos if v["id"] not in used]
+        # uploads this app made from other folders aren't candidates for a missed match
+        ours = {i for rec in self._store.data.values() for i in rec.get("video_ids") or []}
+        rows += [{"kind": "elsewhere" if v["id"] in ours else "only", "video": v, "more": 0, "local": None}
+                 for v in videos if v["id"] not in used]
         return {"rows": rows, "plan": self._replan(), "scope": self._compared.get("scope", ""),
                 "read_at": self._compared.get("read_at", ""), "complete": self._compared.get("complete", True),
                 "target": self._compared.get("target", ""), "read": len(videos)}
@@ -336,7 +339,10 @@ class Api:
             checks += self._with_sign_in(lambda yt: self._verify_uploaded(youtube.service_copy(yt), uploaded))
             self._sync_youtube()
         bad = sum(c["level"] == "bad" for c in checks)
-        self._say(f"核對完成：{bad} 項有問題" if bad else "核對完成：沒有發現問題")
+        if not uploaded:
+            self._say("核對完成：這個資料夾沒有用這個程式上傳的影片，沒有可以核對的（頻道上有沒有，請用「和 YouTube 比對…」）")
+        else:
+            self._say(f"核對完成：{bad} 項有問題" if bad else "核對完成：沒有發現問題")
         return {"checks": checks, "plan": self._replan()}
 
     def _verify_uploaded(self, yt, uploaded):
@@ -353,10 +359,10 @@ class Api:
         items = self._items
         up = sum(it["status"] == "uploaded" for it in items)
         left = [it for it in items if it["status"] != "uploaded"]
-        text = f"這個資料夾 {len(items)} 段錄影：已上傳 {up} 段，還沒傳 {len(left)} 段"
         known = sum(bool(it["on_channel"]) and not it["on_channel_some"] for it in left)
+        text = f"這個資料夾 {len(items)} 段錄影：已上傳 {up} 段，還沒傳 {len(left) - known} 段"
         if known:
-            text += f"（其中 {known} 段頻道上已經有了）"
+            text += f"，另有 {known} 段頻道上已經有了（不是這個程式傳的）"
         return {"level": "ok" if not left else "info", "text": text, "rows": []}
 
     def _verify_videos(self, uploaded, got):

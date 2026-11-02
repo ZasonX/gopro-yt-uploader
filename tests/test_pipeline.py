@@ -1052,7 +1052,7 @@ def test_only_scanned_photos_can_be_opened(tmp_path, monkeypatch):
     assert api.reveal_photo(str(tmp_path), "GOPR0805.JPG") is True
     assert ran == [["explorer", f"/select,{os.path.normpath(str(tmp_path / 'GOPR0805.JPG'))}"]]
     assert api.reveal_photo(str(tmp_path), "secret.txt") is False
-    assert api.open_photo(str(tmp_path), "..\secret.txt") is False
+    assert api.open_photo(str(tmp_path), r"..\secret.txt") is False
 
 
 def test_tz_override_note_and_own_description(tmp_path):
@@ -1177,6 +1177,32 @@ def test_compare_a_same_named_file_of_another_size_is_only_a_maybe(tmp_path, mon
     assert api._items[0]["on_channel"] == []
     api._compared = {"videos": []}
     assert [r["kind"] for r in api.compare_result()["rows"]] == ["none"]
+
+
+def test_compare_tells_this_apps_other_uploads_from_unknown_videos(tmp_path, monkeypatch):
+    api, _, _ = _compare_api(tmp_path, monkeypatch, [])
+    api._store.data["another folder"] = {"video_ids": ["OURS"]}
+    api._compared = {"videos": [{"id": "OURS", "title": "a", "size": 5, "name": "", "published": ""},
+                                {"id": "HAND", "title": "b", "size": 6, "name": "", "published": ""}]}
+    kinds = {r["video"]["id"]: r["kind"] for r in api.compare_result()["rows"] if r["video"]}
+    assert kinds == {"OURS": "elsewhere", "HAND": "only"}
+
+
+def test_verify_with_nothing_uploaded_does_not_say_all_is_well(tmp_path, monkeypatch):
+    api, events, _ = _upload_api(tmp_path, monkeypatch, 1, None)
+    api._channel = {api._items[0]["size"]: [{"id": "SAME"}]}
+    api.verify()
+    said = " / ".join(d.get("msg", "") for _, d in events)
+    assert "沒有可以核對" in said and "沒有發現問題" not in said
+
+
+def test_missing_client_secret_logs_what_could_be_seen_names_only(caplog):
+    from gopro_uploader import youtube as yt_mod
+    with open(config.path("settings.json"), "w", encoding="utf-8") as f:
+        f.write("CONTENTS")
+    with pytest.raises(RuntimeError, match="client_secret.json"):
+        yt_mod.get_service()
+    assert "settings.json" in caplog.text and "CONTENTS" not in caplog.text
 
 
 def test_compare_can_read_one_playlist_or_be_cancelled(tmp_path, monkeypatch):

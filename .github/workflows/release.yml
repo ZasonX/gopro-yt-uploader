@@ -1,0 +1,33 @@
+# Pushing a tag like v0.1.0 tests, builds the exe on GitHub's Windows machine and publishes a Release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install -q -r requirements.txt
+      - name: Test
+        run: .venv\Scripts\python.exe -m pytest -q
+      - name: Build
+        shell: cmd
+        run: build.bat
+      - name: Zip
+        run: Compress-Archive -Path dist\GoProYTUploader -DestinationPath "GoProYTUploader-$env:GITHUB_REF_NAME.zip"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "GoProYTUploader-$env:GITHUB_REF_NAME.zip" --generate-notes

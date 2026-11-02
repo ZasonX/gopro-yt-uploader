@@ -58,7 +58,7 @@
 
 ### 4. 在程式裡匯入
 
-1. 解壓縮下載的 `GoProYTUploader` 資料夾，雙擊裡面的 `GoProYTUploader.exe`，不用另外安裝 Python。
+1. 到 [Releases](https://github.com/ZasonX/gopro-yt-uploader/releases) 下載最新的 zip，解壓縮後雙擊 `GoProYTUploader` 資料夾裡的 `GoProYTUploader.exe`，不用另外安裝 Python。
    - 第一次執行時，Windows SmartScreen 可能會顯示「Windows 已保護您的電腦」，按「其他資訊 → 仍要執行」即可。原因是這個程式沒有付費的程式碼簽章。
    - 整個資料夾要放在一起，不能只把 exe 單獨複製出來。
 2. 按「設定 → 匯入 client_secret.json」，選剛剛下載的檔案。

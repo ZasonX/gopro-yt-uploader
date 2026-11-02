@@ -208,9 +208,12 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
 .crbar button.on { background: var(--sel); outline: 2px solid var(--accent2); }
 .crsort { display: flex; gap: 4px; align-items: center; font-size: 12px; }
 .crwrap { max-height: 58vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
-.crtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.crtable { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }  /* long titles wrap, no sideways scrolling */
+.crtable th:nth-child(1) { width: 110px; }
+.crtable th:nth-child(2) { width: 34%; }
+.crtable a.ext { white-space: normal; }
 .crtable th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-.crtable td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.crtable td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .crtable td:first-child { white-space: nowrap; }
 .crtable small { color: var(--muted); display: block; }
 .ck.uploaded { color: var(--ok); } .ck.none { color: var(--accent); }
@@ -650,10 +653,11 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.files.length > 1 },
   { key: "resume", level: "gray", label: "已中斷", tip: "傳到一半停下來的，下次開始上傳時從中斷處接著傳",
     test: i => i.status === "pending" && !!i.resume },
-  { key: "notup", level: "gray", label: "未上傳", tip: "還沒傳到 YouTube 的錄影", test: i => i.status !== "uploaded" },
+  { key: "notup", level: "gray", label: "未上傳", tip: "還沒傳到 YouTube 的錄影", test: i => i.status !== "uploaded" && !onChannelWhole(i) },
   { key: "uploaded", level: "gray", label: "已上傳", tip: "", test: i => i.status === "uploaded" },
 ];
 let filterKey = null, photos = [];
+function onChannelWhole(i) { return (i.on_channel || []).length > 0 && !i.on_channel_some; }
 function visibleItems() {  // the rows shown under the current filter chip
   const test = filterKey && CHECKS.find(c => c.key === filterKey)?.test;
   return test ? items.filter(test) : items;
@@ -758,7 +762,7 @@ function render(opts = {}) {
 
 function summary() {
   const inc = items.filter(i => i.include && i.status !== "uploaded");
-  const done = items.filter(i => i.status === "uploaded").length;
+  const done = items.filter(i => i.status === "uploaded" || onChannelWhole(i)).length;
   $("#summary").textContent = items.length
     ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）` : "";
   const vis = visibleItems();
@@ -1342,7 +1346,7 @@ $("#cmpClear").onclick = async () => {
   setPlan(await call("clear_compare")); $("#cmpClear").hidden = $("#cmpLast").hidden = true;
 };
 
-const CR_KIND = { uploaded: "已上傳", some: "部分已上傳", maybe: "可能已上傳", none: "沒上傳", only: "只在 YouTube" };
+const CR_KIND = { uploaded: "已上傳", some: "部分已上傳", maybe: "可能已上傳", none: "沒上傳", only: "只在 YouTube", elsewhere: "別的資料夾傳的" };
 const CR_MAX = 2000;  // a big channel's rows would make the window crawl
 let crRes = null, crFilter = "", crOrder = "local";
 function showCompareResult(res) {

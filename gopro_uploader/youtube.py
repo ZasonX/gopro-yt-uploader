@@ -51,6 +51,20 @@ def has_client_secret() -> bool:
     return os.path.exists(client_secret_path())
 
 
+def _secret_diagnosis() -> str:
+    """What this process could see when the secret looked missing: names only, never contents."""
+    p = client_secret_path()
+    try:
+        seen = f"stat ok, {os.stat(p).st_size} bytes"
+    except OSError as e:
+        seen = repr(e)
+    try:
+        names = sorted(os.listdir(os.path.dirname(p)))
+    except OSError as e:
+        names = repr(e)
+    return f"path={p} stat={seen} folder={names} GOPRO_YT_HOME={os.environ.get('GOPRO_YT_HOME')}"
+
+
 def install_client_secret(src: str) -> None:
     with open(src, encoding="utf-8") as f:
         data = json.load(f)
@@ -96,7 +110,8 @@ def get_service(interactive: bool = True):
         if not interactive:
             return None
         if not has_client_secret():
-            raise RuntimeError("尚未設定 client_secret.json")
+            log.error("client_secret.json looks missing: %s", _secret_diagnosis())
+            raise RuntimeError(f"找不到 client_secret.json（{client_secret_path()}）")
         flow = InstalledAppFlow.from_client_secrets_file(client_secret_path(), SCOPES)
         creds = flow.run_local_server(port=0, open_browser=True,
                                       success_message="登入完成，可以關閉這個分頁回到程式。")
