@@ -90,6 +90,12 @@ a.ext:hover { text-decoration: underline; }
 .bar > div { height: 100%; background: var(--accent2); border-radius: 2px; }
 .st.resumable { color: var(--muted); }
 .st.oncopy { color: var(--warn); }
+.st.pendingyt { color: var(--warn); }
+#btnFixTimes { display: block; margin: 6px 0 2px; }
+/* a draft's main step: yellow like the 草稿 marks, so it isn't mistaken for 開始上傳 / 更新到 YouTube */
+.draftrow { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
+#btnFixDrafts { flex: 1; padding: 8px 10px; background: var(--warn); border-color: var(--warn); color: var(--panel); font-weight: 600; }
+#btnFixDrafts:hover { filter: brightness(1.1); }
 .st.resumable.restart { color: var(--warn); }
 .bar.paused > div { background: var(--muted); }
 .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
@@ -215,6 +221,9 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
 .crtable th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .crtable td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .crtable td:first-child { white-space: nowrap; }
+#dlgFix { width: 900px; }
+.fxtable th:nth-child(1) { width: 36px; }
+.fxtable th:nth-child(2) { width: 50%; }
 .crtable small { color: var(--muted); display: block; }
 .ck.uploaded { color: var(--ok); } .ck.none { color: var(--accent); }
 .ck.maybe, .ck.some { color: var(--warn); } .ck.only { color: var(--accent2); }
@@ -345,7 +354,19 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     <tbody id="crRows"></tbody>
   </table></div>
   <div id="crMore" class="hint"></div>
-  <div class="btns"><button id="crClose">關閉</button></div>
+  <div class="btns"><button id="crFix" hidden title="手動上傳、在這個資料夾找到同檔名同大小的影片，補上這個程式會填的設定">修正手動上傳的影片…</button><button id="crClose">關閉</button></div>
+</dialog>
+
+<dialog id="dlgFix">
+  <h2>修正手動上傳的影片</h2>
+  <div id="fxInfo" class="hint"></div>
+  <div class="crbar"><button id="fxAll">全選</button><button id="fxNone">全不選</button><span id="fxCount" class="hint"></span></div>
+  <div class="crwrap"><table class="crtable fxtable">
+    <thead><tr><th></th><th>YouTube 上現在</th><th>改成</th></tr></thead>
+    <tbody id="fxRows"></tbody>
+  </table></div>
+  <div id="fxProgress" class="hint"></div>
+  <div class="btns"><button id="fxStop" hidden>停止</button><button id="fxClose">關閉</button><button id="fxStart" class="primary">開始修正</button></div>
 </dialog>
 
 <dialog id="dlgVerify">
@@ -444,7 +465,7 @@ const PRIVACY = { public: "公開", unlisted: "非公開", private: "私人" };
 const LANG = { "zh-TW": "中文（台灣）", "zh-Hant": "中文（繁體）", ja: "日文", en: "英文" };
 const TSRC = { gps: "GPS", "camera+gps_offset": "相機+GPS校正", camera: "相機時鐘", file_mtime: "檔案時間", manual: "手動" };
 const LSRC = { gps: "GPS", nearby: "推測", manual: "手動" };
-const ZSRC = { file: "從檔案自動判斷", manual: "手動指定", default: "判斷不出來，用預設時區" };
+const TZSRC = { file: "自動", manual: "手動", default: "預設", title: "依 YouTube 標題", near: "依前後影片的標題" };
 
 function log(msg, level) {
   const el = $("#log"), line = document.createElement("div");
@@ -472,6 +493,8 @@ async function call(name, ...args) {
 
 window.onEvent = ev => {
   if (ev.type === "compare") { $("#cmpProgress").textContent = `已讀 ${ev.read} 支…`; return; }
+  if (ev.type === "fix") { $("#fxProgress").textContent = `修正中：${ev.done} / ${ev.total}`; return; }
+  if (ev.type === "push") { busy(`更新到 YouTube ${ev.done} / ${ev.total}：${ev.title}`); return; }
   if (ev.type === "log") log(ev.msg, ev.level);
   else if (ev.type === "channel") { setChannel(ev.name); log(`已登入 YouTube 頻道：${ev.name}`); }
   else if (ev.type === "signed_out") setSignedOut();
@@ -610,17 +633,22 @@ function resumeHtml(it) {  // a stopped upload YouTube still holds
 function onChannelHtml(it) {  // not uploaded from here, but the channel has a video of the exact same size
   const v = it.on_channel[0], more = it.on_channel.length > 1 ? `（共 ${it.on_channel.length} 支）` : "";
   const tip = `頻道上有大小完全相同的影片：${v.title}（${(v.published || "").slice(0, 10)}）${more}`;
-  return `<span class="st oncopy" title="${esc(tip)}">${it.on_channel_some ? "部分分段已傳過" : "已傳過"}</span>
+  const label = it.on_channel_draft ? "草稿" : it.on_channel_some ? "部分分段已傳過" : "已傳過";
+  return `<span class="st oncopy" title="${esc(it.on_channel_draft ? "手動上傳了，但什麼都沒填。" + tip : tip)}">${label}</span>
     <a class="ext" href="https://youtu.be/${esc(v.id)}" target="_blank" title="${esc(tip)}">YouTube ↗</a>`;
 }
 function statusHtml(it) {
   if (it.status === "pending" && it.resume) return resumeHtml(it);
   if (it.on_channel?.length && it.status === "pending") return onChannelHtml(it);
-  let h = `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
+  let h = it.hand && it.status === "uploaded"
+    ? `<span class="st uploaded" title="以前手動上傳的（比對時檔名和大小都相同）">已上傳・手動</span>`
+    : `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
   if (it.status === "uploading" && it.progress) {
     const p = it.progress, pct = p.total ? (100 * p.done / p.total) : 0;
     h += `${p.parts > 1 ? ` ${p.part}/${p.parts}` : ""} ${pct.toFixed(0)}%<div class="bar"><div style="width:${pct}%"></div></div>`;
   }
+  if ((it.yt_pending || []).length)
+    h += ` <span class="st pendingyt" title="在這裡改過，還沒送到 YouTube：按下方「更新到 YouTube」">待更新</span>`;
   if (it.status === "uploaded" && it.video_ids?.length)
     h += " " + it.video_ids.map(v => `<a class="ext" href="https://youtu.be/${v}" target="_blank" title="在瀏覽器開啟 YouTube 影片頁">YouTube ↗</a>`).join(" ");
   if (it.status === "error" && it.error) h += ` <span title="${esc(it.error)}">ⓘ</span>`;
@@ -641,8 +669,12 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => i.title_date_mismatch && !ON_YT.includes(i.status) },
   { key: "missing", level: "red", label: "YouTube 上已刪除", tip: "上傳過，但在 YouTube 上找不到了", test: i => i.status === "missing" },
   { key: "error", level: "red", label: "上傳失敗", tip: "滑鼠移到狀態欄的 ⓘ 看原因", test: i => i.status === "error" },
+  { key: "titletime", level: "red", label: "標題時間不符", tip: "YouTube 上的標題開頭的日期時間和檔案不同（手打錯、照抄上一支的，或相機是家裡的時間卻標了當地時區）",
+    test: i => !!i.title_should },
+  { key: "draft", level: "yellow", label: "草稿", tip: "手動上傳到 YouTube，但什麼都沒填；選取後按右邊的「修正到 YouTube」補上",
+    test: i => !!i.on_channel_draft },
   { key: "oncopy", level: "yellow", label: "已傳過", tip: "這裡沒有上傳紀錄，但頻道上有大小完全相同的影片，再傳就重複了",
-    test: i => (i.on_channel || []).length > 0 },
+    test: i => (i.on_channel || []).length > 0 && !i.on_channel_draft },
   { key: "pending", level: "yellow", label: "待更新到 YouTube", tip: "已上傳的影片在這裡改了標題或說明，還沒送到 YouTube",
     test: i => (i.yt_pending || []).length > 0 },
   { key: "short", level: "yellow", label: "會變成 Shorts", tip: "直式（相機直拿）而且 3 分鐘以內，YouTube 會歸到 Shorts",
@@ -850,7 +882,8 @@ $("#rows").addEventListener("contextmenu", e => {
   showMenu(e.clientX, e.clientY, it.files.flatMap((f, n) => [
     { label: `▶ 用預設播放器開啟原始檔${many ? `（${f}）` : ""}`, run: () => call("open_original", it.id, n) },
     { label: `📂 在資料夾中顯示${many ? `（${f}）` : ""}`, run: () => call("reveal_file", it.id, n) },
-  ]).concat([{ label: `📋 複製檔名（${it.files.join(" + ")}）`, run: () => navigator.clipboard.writeText(it.files.join("\n")) }]));
+  ]).concat([{ label: "📋 複製標題", run: () => navigator.clipboard.writeText(it.title) },
+             { label: `📋 複製檔名（${it.files.join(" + ")}）`, run: () => navigator.clipboard.writeText(it.files.join("\n")) }]));
 });
 $("#rows").addEventListener("click", e => {  // the 📂 button on a photo gap row
   const b = e.target.closest("button.gapopen"); if (!b) return;
@@ -1011,6 +1044,8 @@ function renderDetail() {
     return;
   }
   const onYT = one && ["uploaded", "partial"].includes(one.status);
+  const titleOff = sel.filter(i => i.title_should);
+  const drafts = sel.filter(i => i.on_channel_draft);
   const ytTop = !onYT ? "" : (one.yt ? ytBox(one)
     : `<div class="hint">已上傳，但還沒從 YouTube 讀過這支影片的資料。登入 YouTube 後重新掃描，就會顯示 YouTube 上的資料。</div>
        ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
@@ -1026,6 +1061,12 @@ function renderDetail() {
   d.innerHTML = `${ytTop}
     ${locked ? '<div class="hint warn">已選的錄影中有正在上傳的，先不能改。</div>' : ""}
     ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
+    ${drafts.length ? `<div class="hint warn">${one ? "已手動上傳，但還是草稿" : `已選的錄影中有 ${drafts.length} 段已手動上傳，但還是草稿`}（標題、說明都沒填）。改好標題後按下面的按鈕補上設定。
+       <div class="draftrow"><button id="btnFixDrafts">修正到 YouTube${drafts.length > 1 ? `（${drafts.length} 段）` : ""}…</button>
+       ${one ? `<a class="ext" href="https://studio.youtube.com/video/${esc(one.on_channel[0].id)}/edit" target="_blank">在 Studio 打開 ↗</a>` : ""}</div></div>` : ""}
+    ${titleOff.length ? `<div class="hint warn">⚠ ${one ? `YouTube 上的標題時間和檔案不同，應該是「${esc(one.title_should)}」。`
+        : `已選的錄影中有 ${titleOff.length} 段，YouTube 上的標題時間和檔案不同。`}
+       <button id="btnFixTimes">只改標題開頭的時間${titleOff.length > 1 ? `（${titleOff.length} 支）` : ""}</button>改完按下方「更新到 YouTube」送出。</div>` : ""}
     ${one?.time_suspect ? `<div class="hint ${one.date_uncertain || !one.date_guess ? "warn" : ""}">相機時鐘重設過，檔案裡沒有真實時間。${
         one.date_uncertain ? `前後錄影的日期不同，先用 ${esc(one.date_guess)}，請確認日期。`
         : one.date_guess ? `日期是依前後的錄影推測的（${esc(one.date_guess)}），標題只放日期。`
@@ -1033,6 +1074,8 @@ function renderDetail() {
     ${locked ? "" : '<div class="hint">改完按 Enter 或點別的地方就會自動儲存。</div>'}
     ${one ? `<section class="grp">${head("title", "標題")}
       <input id="titleInput" value="${esc(one.title)}">
+      ${items.indexOf(one) > 0 ? `<button class="mini" id="btnPrevTitle" style="margin:4px 0 0"
+        title="${esc(`上一支：${items[items.indexOf(one) - 1].title}`)}">沿用上一支的標題（開頭換成這支的時間）</button>` : ""}
       ${one.title_date_mismatch ? `<div class="hint warn">⚠ 標題裡的日期跟拍攝時間（${esc(one.local.slice(0, 10))}）不同。
         <button class="mini" id="btnFixDate">只把標題開頭的日期改成 ${esc(one.local.slice(0, 10))}</button></div>` : ""}
     </section>
@@ -1049,9 +1092,9 @@ function renderDetail() {
         <input id="clockInput" placeholder="例如 15:16（不知道就留空，標題只放日期）" inputmode="numeric"
           value="${one.time_known ? esc(one.local.slice(11, 16)) : ""}">
       </label>` : ""}
-      <label class="f"><span>時區${one ? ` <span class="hint">${one.tz_source === "file" ? "自動" : one.tz_source === "manual" ? "手動" : "預設"}</span>` : ""}</span>
+      <label class="f"><span>時區${one ? ` <span class="hint">${TZSRC[one.tz_source] || "預設"}</span>` : ""}</span>
         <select id="tzInput">
-          <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從檔案判斷）"}</option>
+          <option value="">自動${one && one.tz_source !== "manual" ? `（目前：${esc(one.tz)}）` : "（從 YouTube 標題或檔案判斷）"}</option>
           ${TZS.map(t => `<option value="${t}" ${one && one.tz_source === "manual" && one.tz === t ? "selected" : ""}>${t}${t === S.home_tz ? "（家鄉，標題不標示）" : ""}</option>`).join("")}
         </select>
       </label>
@@ -1104,6 +1147,12 @@ function renderDetail() {
   }
   const fix = $("#btnFixDate");
   if (fix) fix.onclick = async () => setPlan(await call("fix_title_dates", ids));
+  const prevTitle = $("#btnPrevTitle");
+  if (prevTitle) prevTitle.onclick = async () => setPlan(await call("title_from_previous", one.id));
+  const fixTimes = $("#btnFixTimes");
+  if (fixTimes) fixTimes.onclick = async () => setPlan(await call("fix_title_times", titleOff.map(i => i.id)));
+  const fixDrafts = $("#btnFixDrafts");
+  if (fixDrafts) fixDrafts.onclick = () => openFix(drafts.map(i => i.id));
   // date + 24h clock; an empty clock means "date only"
   const clockOk = v => !v || /^([01]?\d|2[0-3]):?[0-5]\d$/.test(v);
   const hhmm = v => v.includes(":") ? v.padStart(5, "0") : v.padStart(4, "0").replace(/(\d\d)(\d\d)/, "$1:$2");
@@ -1356,6 +1405,13 @@ function showCompareResult(res) {
     + (res.complete ? "" : "　⚠ 中途取消，結果不完整：沒讀到的影片會被當成沒上傳");
   $("#dlgCmpResult").showModal();
   renderCompare();
+  refreshFixButton();
+}
+async function refreshFixButton() {
+  fxRes = await call("hand_fixes");
+  const n = fxRes?.rows.filter(r => r.tick).length || 0;
+  $("#crFix").hidden = !fxRes?.rows.length;
+  $("#crFix").textContent = n ? `修正手動上傳的影片（${n} 支沒填設定）…` : "修正手動上傳的影片…";
 }
 function crSorted(rows) {
   const k = crOrder === "list"
@@ -1394,6 +1450,73 @@ function renderCompare() {
   document.querySelector(".crwrap").scrollTop = 0;
 }
 $("#crClose").onclick = () => $("#dlgCmpResult").close();
+
+// videos uploaded by hand (found by file name + size): fill in what this app would have set
+let fxRes = null, fxTicked = new Set(), fxRunning = false, fxOnly = null;  // fxOnly: table rows picked in the main table
+const fxRows = () => fxOnly ? fxRes.rows.filter(r => fxOnly.has(r.item)) : fxRes.rows;
+$("#crFix").onclick = () => {
+  fxOnly = null;
+  fxTicked = new Set(fxRes.rows.filter(r => r.tick).map(r => r.id));
+  $("#fxProgress").textContent = "";
+  $("#dlgFix").showModal();
+  renderFix();
+};
+async function openFix(itemIds) {  // from the main table: just the drafts selected there, all ticked
+  const res = await call("hand_fixes");
+  if (!res) return;
+  fxRes = res; fxOnly = new Set(itemIds);
+  fxTicked = new Set(fxRows().map(r => r.id));
+  if (!fxTicked.size) { alert("找不到這幾段在 YouTube 上的影片，請先「和 YouTube 比對…」"); return; }
+  $("#fxProgress").textContent = "";
+  $("#dlgFix").showModal();
+  renderFix();
+}
+function renderFix() {
+  const r0 = { ...fxRes, rows: fxRows() };
+  $("#fxInfo").textContent = `勾選的影片會改成和這個程式上傳時一樣：標題、說明、類別、語言、拍攝日期、非兒童內容、無付費宣傳，`
+    + `瀏覽權限改成「${PRIVACY[r0.privacy] || r0.privacy}」，`
+    + (r0.playlist_id ? `並依拍攝順序加進播放清單「${r0.playlist}」。` : "不加入播放清單。")
+    + `每支約用 100 配額單位，一天大約能修 95 支；用完會停下，隔天再按一次就接著修。預設只勾標題沒填的（同一個標題用在 3 支以上）。`;
+  $("#fxRows").innerHTML = r0.rows.map(r => `<tr>
+    <td><input type="checkbox" data-id="${esc(r.id)}" ${fxTicked.has(r.id) ? "checked" : ""} ${fxRunning ? "disabled" : ""}></td>
+    <td><a class="ext" href="https://youtu.be/${esc(r.id)}" target="_blank">${esc(r.title)} ↗</a>
+      <small>${esc(r.file)} · ${esc(PRIVACY[r.privacy] || r.privacy || "")}${r.in_list ? " · 已在清單裡" : ""}</small></td>
+    <td>${esc(r.new_title)}</td></tr>`).join("");
+  $("#fxRows").querySelectorAll("input").forEach(c => c.onchange = () => {
+    c.checked ? fxTicked.add(c.dataset.id) : fxTicked.delete(c.dataset.id); fxCount();
+  });
+  fxCount();
+}
+function fxCount() {
+  $("#fxCount").textContent = `勾選 ${fxTicked.size} / ${fxRows().length} 支`;
+  $("#fxStart").disabled = fxRunning || !fxTicked.size;
+  $("#fxStart").textContent = fxTicked.size ? `開始修正（${fxTicked.size} 支）` : "開始修正";
+}
+$("#fxAll").onclick = () => { if (!fxRunning) { fxTicked = new Set(fxRows().map(r => r.id)); renderFix(); } };
+$("#fxNone").onclick = () => { if (!fxRunning) { fxTicked = new Set(); renderFix(); } };
+$("#fxStart").onclick = async () => {
+  const ids = fxRows().filter(r => fxTicked.has(r.id)).map(r => r.id);
+  fxRunning = true; renderFix();
+  $("#fxStop").hidden = false; $("#fxStop").disabled = false; $("#fxClose").disabled = true;
+  $("#fxProgress").textContent = "修正中…";
+  try {
+    const res = await call("fix_hand_uploads", ids);
+    if (res) fxRes = res;
+    $("#fxProgress").textContent = "完成，詳細結果在下方紀錄";
+    if (fxOnly) $("#dlgFix").close();  // opened from the table: the rows there show the result
+  } finally {
+    fxRunning = false;
+    $("#fxStop").hidden = true; $("#fxClose").disabled = false;
+    fxTicked = new Set([...fxTicked].filter(id => fxRes.rows.some(r => r.id === id && r.tick)));
+    renderFix();
+    const cr = await call("compare_result");
+    if (cr) { crRes = cr; setPlan(cr.plan); renderCompare(); }
+    refreshFixButton();
+  }
+};
+$("#fxStop").onclick = () => { $("#fxStop").disabled = true; $("#fxProgress").textContent = "正在停止（目前這支改完就停）…"; call("cancel_fix"); };
+$("#fxClose").onclick = () => $("#dlgFix").close();
+$("#dlgFix").addEventListener("cancel", e => { if (fxRunning) e.preventDefault(); });
 
 const V_ICON = { ok: "✓", bad: "✗", warn: "⚠", info: "ℹ" };
 $("#btnVerify").onclick = async () => {

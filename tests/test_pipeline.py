@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -1200,6 +1201,97 @@ def test_compare_tells_this_apps_other_uploads_from_unknown_videos(tmp_path, mon
     assert kinds == {"OURS": "elsewhere", "HAND": "only"}
 
 
+def _hand_api(tmp_path, monkeypatch):
+    """Three recordings that were uploaded by hand (same file name and size) with a placeholder title."""
+    from gopro_uploader import youtube
+    api, events, _ = _upload_api(tmp_path, monkeypatch, 3, None)
+    api._compared = {"videos": [{"id": f"H{k}", "title": "預設標題", "privacy": "private", "name": it["files"][0],
+                                 "size": it["sizes"][0], "published": "", "pos": 0 if k == 2 else None}
+                                for k, it in enumerate(api._items, 1)]}
+    applied, added = [], []
+    monkeypatch.setattr(youtube, "apply_settings", lambda yt, vid, body: applied.append((vid, body)))
+    monkeypatch.setattr(youtube, "add_to_playlist",
+                        lambda yt, pl, vid, position=None: added.append((pl, vid, position)))
+    monkeypatch.setattr(youtube, "playlist_videos", lambda yt, pl: ["OTHER", "H2"])
+    return api, events, applied, added
+
+
+def test_hand_uploads_are_fixed_in_file_order_and_placed_by_it_in_the_playlist(tmp_path, monkeypatch):
+    api, _, applied, added = _hand_api(tmp_path, monkeypatch)
+    before = api.hand_fixes()
+    assert [r["id"] for r in before["rows"]] == ["H1", "H2", "H3"] and all(r["tick"] for r in before["rows"])
+    assert [r["in_list"] for r in before["rows"]] == [False, True, False]
+    # the main table opens the fix for the rows selected there, by row id; a title edited there is used
+    assert [r["item"] for r in before["rows"]] == [it["id"] for it in api._items]
+    api.edit([api._items[0]["id"]], {"title": "2025-04-01 10:00 edited by hand"})
+    titles = [it["title"] for it in api._items]
+    assert titles[0] == "2025-04-01 10:00 edited by hand"
+    after = api.fix_hand_uploads(["H3", "H1"])
+    assert [(vid, b["snippet"]["title"], b["status"]["privacyStatus"]) for vid, b in applied] == [
+        ("H1", titles[0], "unlisted"), ("H3", titles[2], "unlisted")]
+    # that title is on YouTube now, so it no longer shows as an edit waiting to be sent
+    assert "title" not in api._overrides.get(api._items[0]["id"], {})
+    assert "title" not in api._items[0]["edited"]
+    assert applied[0][1]["recordingDetails"]["recordingDate"].startswith(api._items[0]["recording_date"][:10])
+    # H1 goes before H2 (unknown OTHER stays first); H3 after it, at the end
+    assert added == [("PL25", "H1", 1), ("PL25", "H3", None)]
+    saved = {v["id"]: v["pos"] for v in json.load(open(config.path("channel.json"), encoding="utf-8"))["videos"]}
+    assert saved == {"H1": 1, "H2": 2, "H3": 3}
+    # the fixed ones are recorded as uploaded; the one left is still a draft, though it is
+    # the only one with that title now
+    assert {r["id"]: r["tick"] for r in after["rows"]} == {"H2": True}
+    assert [(it["status"], it["video_ids"], it["hand"]) for it in api._items] == [
+        ("uploaded", ["H1"], True), ("pending", [], False), ("uploaded", ["H3"], True)]
+
+
+def test_fixing_hand_uploads_stops_at_the_quota(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    api, events, applied, added = _hand_api(tmp_path, monkeypatch)
+
+    def apply(yt, vid, body):
+        if vid == "H2":
+            raise youtube.QuotaExceeded("quotaExceeded")
+        applied.append(vid)
+    monkeypatch.setattr(youtube, "apply_settings", apply)
+    api.fix_hand_uploads(["H1", "H2", "H3"])
+    assert applied == ["H1"] and [a[1] for a in added] == ["H1"]
+    assert any("配額" in d.get("msg", "") for _, d in events)
+
+
+def test_apply_settings_keeps_other_fields_and_a_studio_location():
+    from gopro_uploader import youtube
+    sent = []
+
+    class Req:
+        def __init__(self, r):
+            self.r = r
+
+        def execute(self, num_retries=0):
+            return self.r
+
+    class Videos:
+        def list(self, id, part):
+            return Req({"items": [{"snippet": {"title": "預設標題", "tags": ["t"], "thumbnails": {}},
+                                   "status": {"privacyStatus": "private", "embeddable": False, "uploadStatus": "processed"},
+                                   "recordingDetails": {"location": {"latitude": 1.0, "longitude": 2.0}}}]})
+
+        def update(self, part, body):
+            sent.append((part, body))
+            return Req(body)
+
+    class Yt:
+        def videos(self):
+            return Videos()
+
+    body = youtube.video_body("新標題", "GX010001.MP4", "19", "unlisted", "2025-04-04T00:00:00Z", "zh-TW", "zh-TW")
+    youtube.apply_settings(Yt(), "V", body)
+    part, new = sent[0]
+    assert part == "snippet,status,paidProductPlacementDetails"  # recordingDetails left alone: it has a location
+    assert new["snippet"]["title"] == "新標題" and new["snippet"]["tags"] == ["t"] and "thumbnails" not in new["snippet"]
+    assert new["status"] == {"privacyStatus": "unlisted", "embeddable": False,
+                             "selfDeclaredMadeForKids": False, "containsSyntheticMedia": False}
+
+
 def test_verify_with_nothing_uploaded_does_not_say_all_is_well(tmp_path, monkeypatch):
     api, events, _ = _upload_api(tmp_path, monkeypatch, 1, None)
     api._channel = {api._items[0]["size"]: [{"id": "SAME"}]}
@@ -1352,3 +1444,105 @@ def test_verify_uses_the_playlist_it_was_uploaded_for_not_the_one_picked_now(tmp
 
     monkeypatch.setattr(youtube, "list_playlists", lambda yt: [])
     assert any("找不到播放清單「以前的清單」" in c["text"] for c in api.verify()["checks"])
+
+
+def test_title_time_fix_keeps_the_words_and_forgives_a_rounded_minute():
+    from gopro_uploader.planner import title_time_fix
+    local = datetime(2025, 4, 4, 14, 24, 59)
+    assert title_time_fix("2025-04-04 14:24 範例", local) is None
+    assert title_time_fix("2025-04-04 14:25 範例", local) is None  # rounded up
+    assert title_time_fix("2025-04-04 13:24 JST 範例", local) == "2025-04-04 14:24 JST 範例"
+    assert title_time_fix("2025-04-04 14:29 範例", local) == "2025-04-04 14:24 範例"  # copied from the row above
+    assert title_time_fix("2025-04-03 範例", local) == "2025-04-04 範例"
+    assert title_time_fix("2025-04-04 範例", local) is None
+    assert title_time_fix("範例", local) is None
+
+
+def _rec(n, utc, title_day_offset=0):
+    """A recording whose camera wrote mvhd in UTC and stamped the file with its +8 clock."""
+    from gopro_uploader.mp4meta import Mp4Info
+    end_local = utc + timedelta(hours=8, seconds=60)
+    clip = scanner.Clip(path=os.path.join("F", f"GX01{n:04d}.MP4"), size=10, mtime=end_local.timestamp(),
+                        info=Mp4Info(camera_time=utc, duration=60))
+    return scanner.Recording(key=f"K{n}", clips=[clip])
+
+
+def test_zone_comes_from_titles_on_youtube_then_from_the_nearest_titled_ones():
+    from gopro_uploader.config import Settings
+    from gopro_uploader.planner import zone_hints
+    day = datetime(2025, 4, 4)
+    recs = [_rec(101, day + timedelta(hours=1)),             # 09:00 on the +8 clock, at home
+            _rec(102, day + timedelta(hours=3)),             # abroad, titled with JST
+            _rec(103, day + timedelta(hours=11)),            # untitled, same day as 102
+            _rec(104, day + timedelta(days=1, hours=1)),     # untitled, between two JST days
+            _rec(105, day + timedelta(days=2, hours=1)),     # titled with JST
+            _rec(106, day + timedelta(days=3, hours=1)),     # untitled, a later day, nothing after
+            _rec(107, day + timedelta(days=4, hours=1))]     # titled with a word that is no zone
+    titles = {"K101": "2025-04-04 09:00 範例一", "K102": "2025-04-04 12:00 JST 範例二",
+              "K105": "2025-04-06 09:00 JST 範例三", "K107": "2025-04-08 09:00 ABC"}
+    s = Settings()
+    hints = zone_hints(recs, titles, s)
+    assert hints == {"K101": ("Asia/Taipei", "title"), "K102": ("Asia/Tokyo", "title"),
+                     "K103": ("Asia/Tokyo", "near"), "K104": ("Asia/Tokyo", "near"),
+                     "K105": ("Asia/Tokyo", "title")}
+    items = {i["id"]: i for i in build_plan(recs, s, {}, zone_hints=hints)}
+    assert items["K102"]["local"] == "2025-04-04 12:00:00" and items["K102"]["tz_source"] == "title"
+    assert items["K106"]["tz"] == "Asia/Taipei" and items["K106"]["tz_source"] == "file"
+    # the user's own pick still wins
+    assert build_plan(recs, s, {"K102": {"tz": "Asia/Taipei"}}, zone_hints=hints)[1]["tz"] == "Asia/Taipei"
+
+
+def test_filled_in_hand_uploads_are_recorded_as_uploaded_and_drafts_wait(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    api, _, _, _ = _hand_api(tmp_path, monkeypatch)
+    vids = api._compared["videos"]
+    vids[0]["title"] = "自己取的標題"
+    vids.append({"id": "X", "title": "預設標題", "privacy": "private", "name": "other.mp4", "size": 5,
+                 "published": "", "pos": None})
+    local = datetime.fromisoformat(api._items[0]["local"])
+    wrong = f"{(local - timedelta(hours=1)):%Y-%m-%d %H:%M} JST 自己取的標題"
+    monkeypatch.setattr(youtube, "fetch_videos", lambda yt, ids: {v: {"title": wrong, "description": ""} for v in ids})
+    api._yt = object()
+    assert api._adopt_hand() == 1
+    api._replan()
+    api._sync_youtube()
+    api._replan()
+    first = api._items[0]
+    assert (first["status"], first["video_ids"], first["hand"]) == ("uploaded", ["H1"], True)
+    assert [it["status"] for it in api._items[1:]] == ["pending", "pending"]
+    assert [r["id"] for r in api.hand_fixes()["rows"] if r["tick"]] == ["H2", "H3"]
+    # the title on YouTube is an hour off: it is flagged, and fixing keeps the words
+    assert first["title_should"] == f"{local:%Y-%m-%d %H:%M} JST 自己取的標題"
+    api.fix_title_times([first["id"]])
+    assert api._items[0]["title"] == first["title_should"] and api._items[0]["yt_pending"] == ["title"]
+    assert api._items[0]["title_should"] is None
+
+
+def test_a_stale_read_after_an_update_does_not_bring_the_old_title_back(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    api, _, _, _ = _hand_api(tmp_path, monkeypatch)
+    api._compared["videos"][0]["title"] = "2020-01-01 00:00 舊的"
+    old = {"title": "2020-01-01 00:00 舊的", "description": ""}
+    monkeypatch.setattr(youtube, "fetch_videos", lambda yt, ids: {v: dict(old) for v in ids})
+    monkeypatch.setattr(youtube, "update_snippet",
+                        lambda yt, v, title=None, description=None: {"title": title, "description": "d"})
+    api._yt = object()
+    api._adopt_hand()
+    api._replan()
+    api._sync_youtube()
+    api._replan()
+    first = api._items[0]
+    api.fix_title_times([first["id"]])
+    api.push_to_youtube()  # YouTube still answers the read with the old title
+    assert api._items[0]["title"] == first["title_should"] and api._items[0]["title_should"] is None
+    assert api._items[0]["yt_pending"] == []
+
+
+def test_title_from_the_row_above_gets_this_rows_time(tmp_path, monkeypatch):
+    api, _, _, _ = _hand_api(tmp_path, monkeypatch)
+    first, second = api._items[0], api._items[1]
+    api.edit([first["id"]], {"title": f"{first['local'][:16].replace('T', ' ')} 範例的字"})
+    api.title_from_previous(second["id"])
+    assert api._items[1]["title"] == f"{second['local'][:16]} 範例的字"
+    api.title_from_previous(first["id"])  # nothing above the first row
+    assert api._items[0]["title"].endswith("範例的字")

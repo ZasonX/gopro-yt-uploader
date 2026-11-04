@@ -82,8 +82,61 @@ def _rec_utc(rec: Recording, cam_offset: timedelta | None, camera_tz: ZoneInfo |
     return end - timedelta(seconds=total), "file_mtime"
 
 
+_TITLE_ZONE = re.compile(r"^\d{4}\s*[-/年.]\s*\d{1,2}\s*[-/月.]\s*\d{1,2}日?\s+\d{1,2}:\d{2}(?:\s*([A-Z]{2,5})\b)?")
+
+
+def title_zone(title: str, at: datetime, candidates) -> str | None:
+    """The zone a title written as "date time [label]" was meant in: no label = the first
+    candidate (home; this app leaves home times unlabeled), "JST" = the candidate called that
+    at that moment. None for a title without a time, or a word that is no known zone."""
+    m = _TITLE_ZONE.match(title or "")
+    if not m:
+        return None
+    if not m[1]:
+        return candidates[0].key
+    return next((tz.key for tz in candidates if at.astimezone(tz).strftime("%Z") == m[1]), None)
+
+
+def zone_hints(recs: list[Recording], titles: dict[str, str], settings: Settings) -> dict[str, tuple[str, str]]:
+    """recording id -> (zone, "title" | "near") from the titles of videos already on YouTube.
+
+    Without GPS the files only tell the zone the camera was set to, which stays at home when the
+    clock isn't changed on a trip. A title typed as "09:00 JST …" says where it really was.
+    A recording without such a title takes the zone of the nearest titled ones by file number:
+    both sides agree, or the only one(s) shot the same day (camera clock) agree.
+    """
+    home, trip = ZoneInfo(settings.home_tz), ZoneInfo(settings.trip_tz)
+    cands = [home, trip] + [ZoneInfo(k) for k in _ZONE_NAMES if k not in (home.key, trip.key)]
+    own = {}
+    for r in recs:
+        info = r.clips[0].info
+        at = (info.camera_time if info and info.camera_time else datetime.now()).replace(tzinfo=timezone.utc)
+        if r.key in titles and (z := title_zone(titles[r.key], at, cands)):
+            own[r.key] = z
+    out = {k: (z, "title") for k, z in own.items()}
+    if not own:
+        return out
+    day = lambda r: datetime.fromtimestamp(r.clips[0].mtime).date()  # noqa: E731
+    order = sorted(recs, key=lambda r: (os.path.dirname(r.clips[0].path), gopro_number(r.clips[0].name) or 0))
+    for i, r in enumerate(order):
+        if r.key in own:
+            continue
+        folder = os.path.dirname(r.clips[0].path)
+        same = lambda o: os.path.dirname(o.clips[0].path) == folder  # noqa: E731
+        prev = next((o for o in reversed(order[:i]) if o.key in own and same(o)), None)
+        nxt = next((o for o in order[i + 1:] if o.key in own and same(o)), None)
+        sides = [o for o in (prev, nxt) if o]
+        if len(sides) == 2 and own[prev.key] == own[nxt.key]:
+            out[r.key] = (own[prev.key], "near")
+            continue
+        today = {own[o.key] for o in sides if day(o) == day(r)}
+        if len(today) == 1:
+            out[r.key] = (today.pop(), "near")
+    return out
+
+
 def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
-               store_lookup=None, place_lookup=None) -> list[dict]:
+               store_lookup=None, place_lookup=None, zone_hints=None) -> list[dict]:
     trip_tz = ZoneInfo(settings.trip_tz)
     home_tz = ZoneInfo(settings.home_tz)
     camera_tz = None if settings.camera_tz == "auto" else ZoneInfo(settings.camera_tz)
@@ -98,9 +151,13 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
         off = file_offset(rec) if camera_tz is None else None
         utc, tsrc = _rec_utc(rec, cam_offset, camera_tz, trip_tz, off)
         ov = overrides.get(rec.key, {})
-        # the zone this recording was shot in: user's pick > camera's own clock > trip default
+        # the zone this recording was shot in: user's pick > its title on YouTube (or its
+        # neighbours') > camera's own clock > trip default
+        hint = (zone_hints or {}).get(rec.key)
         if ov.get("tz"):
             zone, zsrc = ZoneInfo(ov["tz"]), "manual"
+        elif hint:
+            zone, zsrc = ZoneInfo(hint[0]), hint[1]
         elif off is not None:
             zone, zsrc = _zone_for(off, utc, (home_tz, trip_tz)), "file"
         else:
@@ -129,7 +186,7 @@ def build_plan(recs: list[Recording], settings: Settings, overrides: dict,
             "tz": getattr(zone, "key", None) or local.strftime("%Z"),
             "tz_source": zsrc,
             # the camera's own zone was overridden: say so in the description (shown on YouTube)
-            "tz_note": _tz_note(off, local) if zsrc == "manual" and off is not None
+            "tz_note": _tz_note(off, local) if zsrc in ("manual", "title", "near") and off is not None
                        and off != local.utcoffset() else "",
             # no label in the home zone (e.g. Taiwan); otherwise "JST" etc.
             "tz_label": "" if local.utcoffset() == local.astimezone(home_tz).utcoffset()
@@ -274,6 +331,25 @@ def retime_title(title: str, local: datetime, with_time: bool = True) -> str:
     if m["time"] and with_time:
         new += m["time"][:len(m["time"]) - len(m["time"].lstrip())] + local.strftime("%H:%M")
     return new + title[m.end():]
+
+
+def title_time_fix(title: str, local: datetime) -> str | None:
+    """The title with the recording's date / time at its start, when the one there is wrong;
+    None when it is right or the title doesn't start with a date. A minute rounded up
+    (14:25 for 14:24:59) counts as right."""
+    m = _LEADING_DATE.match(title)
+    if not m:
+        return None
+    try:
+        h, mi = (int(x) for x in m["time"].split(":")) if m["time"] else (None, None)
+        shown = datetime(int(m["y"]), int(m["m"]), int(m["d"]), h or 0, mi or 0)
+    except ValueError:
+        return None
+    floor = local.replace(second=0, microsecond=0)
+    ok = {floor, floor + timedelta(minutes=1)} if local.second >= 30 else {floor}
+    if (shown.date() == local.date()) if h is None else shown in ok:
+        return None
+    return retime_title(title, local)
 
 
 def _date_mismatch(title: str, local: datetime) -> bool:

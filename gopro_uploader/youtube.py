@@ -149,10 +149,47 @@ def create_playlist(yt, title: str, privacy: str = "unlisted") -> dict:
             "published": p["snippet"].get("publishedAt", "")}
 
 
-def add_to_playlist(yt, playlist_id: str, video_id: str) -> None:
+def add_to_playlist(yt, playlist_id: str, video_id: str, position: int | None = None) -> None:
+    """Append, or put it at position (0 = first; needs a playlist sorted by hand, the default)."""
     body = {"snippet": {"playlistId": playlist_id,
                         "resourceId": {"kind": "youtube#video", "videoId": video_id}}}
+    if position is not None:
+        body["snippet"]["position"] = position
     _execute(yt.playlistItems().insert(part="snippet", body=body))
+
+
+# the settable fields of each part: videos.update resets any it isn't given
+_SNIPPET_KEEP = ("title", "description", "tags", "categoryId", "defaultLanguage", "defaultAudioLanguage")
+_STATUS_KEEP = ("privacyStatus", "embeddable", "license", "publicStatsViewable", "publishAt",
+                "selfDeclaredMadeForKids", "containsSyntheticMedia")
+
+
+def apply_settings(yt, video_id: str, body: dict) -> dict:
+    """Write an upload body (video_body) onto a video already on YouTube, e.g. one uploaded by
+    hand in Studio with nothing filled in. About 51 quota units.
+
+    The current snippet and status are read first and only the body's fields change, so tags,
+    embedding, license and the like stay. recordingDetails is left alone when the video has a
+    location set in Studio: updating that part could drop it. Returns what YouTube now has."""
+    items = _execute(yt.videos().list(id=video_id, part="snippet,status,recordingDetails")).get("items") or []
+    if not items:
+        raise ValueError(f"YouTube 上找不到影片 {video_id}")
+    cur = items[0]
+    new = {"id": video_id,
+           "snippet": {**{k: v for k, v in cur.get("snippet", {}).items() if k in _SNIPPET_KEEP}, **body["snippet"]},
+           "status": {**{k: v for k, v in cur.get("status", {}).items() if k in _STATUS_KEEP}, **body["status"]}}
+    if not (cur.get("recordingDetails") or {}).get("location"):
+        new["recordingDetails"] = body["recordingDetails"]
+    if "paidProductPlacementDetails" in body:
+        new["paidProductPlacementDetails"] = body["paidProductPlacementDetails"]
+    try:
+        return _execute(yt.videos().update(part=",".join(k for k in new if k != "id"), body=new))
+    except HttpError as e:
+        if e.resp.status != 400 or "paidProductPlacementDetails" not in new:
+            raise
+        log.warning("update refused paidProductPlacementDetails, sending without it: %s", e)
+        new.pop("paidProductPlacementDetails")
+        return _execute(yt.videos().update(part=",".join(k for k in new if k != "id"), body=new))
 
 
 def video_body(title, description, category_id, privacy, recording_date,

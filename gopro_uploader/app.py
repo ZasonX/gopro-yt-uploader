@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -18,7 +19,7 @@ import webview
 
 from . import config, geocode, merge, preview, taskbar, youtube
 from .config import TITLE_FORMATS, Settings
-from .planner import build_plan, detect_camera_offset, retime_title
+from .planner import build_plan, detect_camera_offset, retime_title, title_time_fix, zone_hints
 from .scanner import list_photos, scan
 from .store import Edits, Store, fingerprint, setup_logging
 from .store import export_logs as store_export_logs
@@ -96,6 +97,7 @@ class Api:
         self._compared = self._load_channel()
         self._channel = self._index_channel(self._compared.get("videos", []))  # file size -> videos
         self._compare_stop = False
+        self._fix_stop = False
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data):
@@ -113,12 +115,15 @@ class Api:
     def _replan(self):
         self._items = build_plan(self._recs, self._settings, self._overrides,
                                  store_lookup=self._store.lookup,
-                                 place_lookup=self._place_lookup)
+                                 place_lookup=self._place_lookup,
+                                 zone_hints=zone_hints(self._recs, self._yt_titles(), self._settings))
+        placeholders = self._placeholders()
         for it in self._items:  # "uploading" lives only in memory, not in state.json
             if it["id"] in self._uploading_ids and it["status"] != "uploaded":
                 it["status"] = "uploading"
             self._attach_youtube(it)
-            self._attach_channel(it)
+            self._check_title_time(it)
+            self._attach_channel(it, placeholders)
             it["resume"] = self._resume_info(it) if it["status"] not in ("uploaded", "uploading") else None
         off = detect_camera_offset(self._recs) if self._settings.camera_tz == "auto" else None
         return {"items": self._items, "recent_places": self._settings.recent_places,
@@ -163,10 +168,11 @@ class Api:
         That copy is saved in state.json, so it is still shown after a restart when the
         sign-in has expired or there is no network; yt_checked says when it was read.
         """
+        rec = self._store.lookup(it) or {}
+        it["hand"] = bool(rec.get("hand"))  # uploaded by hand, found by 比對
         if it["status"] not in ("uploaded", "partial") or not it.get("video_ids"):
             return
         vids = it["video_ids"]
-        rec = self._store.lookup(it) or {}
         saved = rec.get("yt") or {}
         if not all(v in saved for v in vids):
             return  # never read from YouTube yet: only the local upload record exists
@@ -185,8 +191,29 @@ class Api:
             it["title"] = live[0]["title"]
         if "description" not in pending:
             it["description"] = live[0].get("description", "")
+        # an edit made before it went up (or before 修正) is on YouTube already: not 已修改 any more
+        it["edited"] = [k for k in it.get("edited", []) if k not in ("title", "description") or k in pending]
         it["yt_place"] = live[0].get("place") or ""
         it["yt_has_location"] = live[0].get("lat") is not None
+
+    def _yt_titles(self) -> dict[str, str]:
+        """recording id -> its title on YouTube (as last read), for zone_hints."""
+        out = {}
+        for key, fp in self._fps.items():
+            rec = self._store.data.get(fp) or {}
+            saved = rec.get("yt") or {}
+            live = [saved[v] for v in rec.get("video_ids") or [] if saved.get(v)]
+            if rec.get("status") in ("uploaded", "partial") and live:
+                out[key] = live[0].get("title") or ""
+        return out
+
+    @staticmethod
+    def _check_title_time(it):
+        """An uploaded video whose title starts with another date / time than its file says:
+        typed by hand, copied from the row above, or the camera's home clock with " JST" added."""
+        it["title_should"] = None
+        if it["status"] in ("uploaded", "partial") and it["time_known"] and "title" not in (it.get("yt_pending") or []):
+            it["title_should"] = title_time_fix(it["title"], datetime.fromisoformat(it["local"]))
 
     # ------------------------------------------------- already on the channel?
     @staticmethod
@@ -215,10 +242,10 @@ class Api:
         except OSError:
             pass
 
-    def _attach_channel(self, it):
+    def _attach_channel(self, it, placeholders=frozenset()):
         """A file with the exact size of a video the last comparison read was uploaded before,
         even under another name or by hand. A merge changes the size: compare_result lists those."""
-        it["on_channel"], it["on_channel_some"] = [], False
+        it["on_channel"], it["on_channel_some"], it["on_channel_draft"] = [], False, False
         if it["status"] not in ("pending", "error", "missing", "partial"):
             return
         own = set(it["video_ids"])
@@ -226,6 +253,50 @@ class Api:
         if any(hits):
             it["on_channel"] = list({v["id"]: v for found in hits for v in found}.values())
             it["on_channel_some"] = not all(hits)
+            it["on_channel_draft"] = any(self._is_draft(v, placeholders, it.get("files", [])) for v in it["on_channel"])
+
+    def _placeholders(self) -> set[str]:
+        """Titles of hand uploads nobody filled in (YouTube's default): one shared by 3+ private
+        hand uploads. Kept with the comparison, so the last few drafts still count once the
+        others have been fixed."""
+        videos = self._compared.get("videos", [])
+        count = Counter(v.get("title") for v in videos if v.get("name") and v.get("privacy") == "private")
+        return set(self._compared.get("placeholders") or []) | {t for t, n in count.items() if t and n >= 3}
+
+    def _remember_placeholders(self) -> set[str]:
+        ph = self._placeholders()
+        if self._compared and ph != set(self._compared.get("placeholders") or []):
+            self._compared["placeholders"] = sorted(ph)
+            self._save_compared()
+        return ph
+
+    @staticmethod
+    def _is_draft(v, placeholders, files) -> bool:
+        """Uploaded by hand with nothing filled in: a placeholder title, or just the file name."""
+        title = (v.get("title") or "").strip()
+        names = {f.upper() for f in files} | {os.path.splitext(f)[0].upper() for f in files}
+        return title in placeholders or title.upper() in names
+
+    def _adopt_hand(self) -> int:
+        """Hand uploads with this folder's file names and exact sizes are its uploads too: record
+        them in state.json like this app's own, so they show what YouTube has, can be edited and
+        sent with 更新到 YouTube, and 核對 checks them. Drafts wait until 修正 has filled them in."""
+        ph = self._remember_placeholders()
+        found: dict[str, tuple[dict, dict]] = {}
+        for v, it, n in self._hand_matches():
+            found.setdefault(it["id"], (it, {}))[1].setdefault(n, v)
+        new = 0
+        for it, got in found.values():
+            if (it["status"] != "pending" or len(got) != len(it["files"])
+                    or any(self._is_draft(v, ph, it["files"]) for v in got.values())):
+                continue
+            ids = [got[n]["id"] for n in range(len(got))]
+            self._store.update(it, status="uploaded", video_ids=ids, hand=True)
+            log.info("hand upload recorded as uploaded: %s -> %s", " + ".join(it["files"]), ", ".join(ids))
+            new += 1
+        if new:
+            self._say(f"{new} 段手動上傳的影片（檔名和大小都相同）記為已上傳")
+        return new
 
     def compare_options(self):
         """What the 比對 dialog offers. Reads only the playlist names (1 quota unit per 50)."""
@@ -256,6 +327,9 @@ class Api:
         n = sum(bool(it["on_channel"]) for it in self._items)
         note = "" if self._compared["complete"] else "（中途取消，結果不完整）"
         self._say(f"比對完成{note}：讀了 {len(self._compared['videos'])} 支影片，這個資料夾有 {n} 段已經傳過")
+        if self._adopt_hand():
+            self._replan()
+            self._sync_youtube()  # their titles, for the zone they were shot in and the time check
         return self.compare_result()
 
     def _read_for_compare(self, yt, scope, since, playlist_id):
@@ -286,8 +360,7 @@ class Api:
         self._compared = {"read_at": datetime.now().isoformat(timespec="minutes"), "scope": text, "complete": done,
                           "target": s.playlist if order else "", "videos": videos}
         self._channel = self._index_channel(videos)
-        with open(config.path(CHANNEL_FILE), "w", encoding="utf-8") as f:
-            json.dump(self._compared, f, ensure_ascii=False)
+        self._save_compared()
 
     def compare_result(self):
         """A row per local recording, then a row per video that matched none of them, so anything
@@ -329,6 +402,114 @@ class Api:
         self._forget_channel()
         return self._replan()
 
+    # ------------------------------------------ fix videos uploaded by hand
+    def _hand_matches(self):
+        """(video, item, chapter index) for every video the last comparison read that this app
+        didn't upload and whose file name and exact size are a chapter of a scanned recording."""
+        self._replan()
+        ours = {i for rec in self._store.data.values() for i in rec.get("video_ids") or []}
+        by_file = {}
+        for it in self._items:
+            for n, (name, size) in enumerate(zip(it["files"], it.get("sizes") or [])):
+                by_file[(name.upper(), size)] = (it, n)
+        out = []
+        for v in self._compared.get("videos", []):
+            hit = by_file.get(((v.get("name") or "").upper(), v.get("size")))
+            if hit and v["id"] not in ours:
+                out.append((v, *hit))
+        order = {it["id"]: k for k, it in enumerate(self._items)}
+        return sorted(out, key=lambda m: (order[m[1]["id"]], m[2]))
+
+    @staticmethod
+    def _hand_title(it, n):
+        return it["title"] + (f" ({n + 1}/{len(it['files'])})" if len(it["files"]) > 1 else "")
+
+    def hand_fixes(self):
+        """What 修正手動上傳的影片 would do. Drafts (nothing filled in) are ticked by default; whole
+        recordings uploaded by hand and filled in are already recorded as uploaded, not listed."""
+        matches = self._hand_matches()
+        ph = self._placeholders()
+        s = self._settings
+        return {"rows": [{"id": v["id"], "item": it["id"], "title": v["title"], "privacy": v.get("privacy"),
+                          "new_title": self._hand_title(it, n), "file": it["files"][n],
+                          "in_list": v.get("pos") is not None, "tick": self._is_draft(v, ph, it["files"])}
+                         for v, it, n in matches],
+                "privacy": s.privacy, "playlist": "" if s.no_playlist else s.playlist,
+                "playlist_id": "" if s.no_playlist else s.playlist_id}
+
+    def cancel_fix(self):
+        self._fix_stop = True
+        return True
+
+    def fix_hand_uploads(self, video_ids: list[str]):
+        """Fill in this app's settings on the picked hand uploads, in file order, and add them to
+        the chosen playlist at their place by file order. Stops at the daily quota (about 100
+        units each); what is done stays done, so running it again goes on."""
+        self._fix_stop = False
+        self._remember_placeholders()  # before the titles change, so the drafts left still count
+        want = set(video_ids)
+        todo = [m for m in self._hand_matches() if m[0]["id"] in want]
+        if not todo:
+            return self.hand_fixes()
+        fixed = self._with_sign_in(lambda yt: self._fix_hand(youtube.service_copy(yt), todo)) or set()
+        if self._adopt_hand():  # the fixed ones are no drafts any more
+            self._replan()
+            # the title edited here is on YouTube now: it isn't a pending change any more
+            for it in self._items:
+                if it["id"] in fixed and it["status"] == "uploaded" and self._overrides.get(it["id"], {}).pop("title", None):
+                    self._save_edits(it["id"])
+            self._replan()
+            self._sync_youtube()
+        return self.hand_fixes()
+
+    def _fix_hand(self, yt, todo):
+        s = self._settings
+        pid = "" if s.no_playlist else s.playlist_id
+        # where each video of this folder belongs: (table row, chapter); others in the playlist stay put
+        row = {it["id"]: k for k, it in enumerate(self._items)}
+        rank = {vid: (row[it["id"]], n) for it in self._items for n, vid in enumerate(it.get("video_ids") or [])}
+        rank.update({v["id"]: (row[it["id"]], n) for v, it, n in self._hand_matches()})
+        listed = youtube.playlist_videos(yt, pid) if pid else []
+        self._say(f"修正 {len(todo)} 支手動上傳的影片…")
+        done, fixed = 0, set()
+        for k, (v, it, n) in enumerate(todo, 1):
+            if self._fix_stop:
+                self._say("已停止，剩下的下次再修正")
+                break
+            title = self._hand_title(it, n)
+            try:
+                youtube.apply_settings(yt, v["id"], self._upload_body(it, title))
+                v["title"], v["privacy"] = title, s.privacy
+                if pid and v["id"] not in listed:
+                    me = rank[v["id"]]
+                    pos = next((i for i, x in enumerate(listed) if x in rank and rank[x] > me), len(listed))
+                    youtube.add_to_playlist(yt, pid, v["id"], None if pos == len(listed) else pos)
+                    listed.insert(pos, v["id"])
+            except youtube.QuotaExceeded:
+                self._say("YouTube 今日配額用完，剩下的明天再按一次「修正」", "error")
+                break
+            except Exception as e:  # noqa: BLE001 - one bad video doesn't stop the rest
+                log.exception("fixing %s failed", v["id"])
+                self._say(f"修正失敗（{it['files'][n]}）：{e}", "error")
+                continue
+            finally:
+                self._save_compared(listed if pid else None)
+            done += 1
+            fixed.add(it["id"])
+            self._emit("fix", done=k, total=len(todo))
+            self._say(f"✓ {title}  https://youtu.be/{v['id']}")
+        self._say(f"修正完成 {done} / {len(todo)} 支")
+        return fixed
+
+    def _save_compared(self, listed=None):
+        """Keep the last comparison in step with what was just changed on YouTube."""
+        if listed is not None:
+            where = {vid: i for i, vid in enumerate(listed)}
+            for v in self._compared.get("videos", []):
+                v["pos"] = where.get(v["id"])
+        with open(config.path(CHANNEL_FILE), "w", encoding="utf-8") as f:
+            json.dump(self._compared, f, ensure_ascii=False)
+
     # ---------------------------------------------------------- 核對
     def verify(self):
         """Is what this folder uploaded really there, whole, and in order? Only reads."""
@@ -340,15 +521,19 @@ class Api:
             self._sync_youtube()
         bad = sum(c["level"] == "bad" for c in checks)
         if not uploaded:
-            self._say("核對完成：這個資料夾沒有用這個程式上傳的影片，沒有可以核對的（頻道上有沒有，請用「和 YouTube 比對…」）")
+            self._say("核對完成：這個資料夾沒有已上傳的影片，沒有可以核對的（頻道上有沒有，請用「和 YouTube 比對…」）")
         else:
             self._say(f"核對完成：{bad} 項有問題" if bad else "核對完成：沒有發現問題")
         return {"checks": checks, "plan": self._replan()}
 
     def _verify_uploaded(self, yt, uploaded):
         got = youtube.file_info(yt, [v for it in uploaded for v in it["video_ids"]])
+        # hand uploads went up in whatever order they were dragged in; that can't be changed
+        mine = [it for it in uploaded if not it.get("hand")]
         return [*self._verify_videos(uploaded, got), *self._verify_playlist(yt, uploaded),
-                self._verify_order(uploaded, got)]
+                *([self._verify_order(mine, got)] if mine else []),
+                *([{"level": "info", "text": f"{len(uploaded) - len(mine)} 段是手動上傳的，不比上傳時間的順序", "rows": []}]
+                  if len(mine) < len(uploaded) else [])]
 
     @staticmethod
     def _row(it, vid=None):
@@ -358,11 +543,17 @@ class Api:
     def _verify_counts(self):
         items = self._items
         up = sum(it["status"] == "uploaded" for it in items)
+        hand = sum(it["status"] == "uploaded" and bool(it.get("hand")) for it in items)
         left = [it for it in items if it["status"] != "uploaded"]
         known = sum(bool(it["on_channel"]) and not it["on_channel_some"] for it in left)
-        text = f"這個資料夾 {len(items)} 段錄影：已上傳 {up} 段，還沒傳 {len(left) - known} 段"
-        if known:
-            text += f"，另有 {known} 段頻道上已經有了（不是這個程式傳的）"
+        drafts = sum(bool(it["on_channel"]) and not it["on_channel_some"] and it.get("on_channel_draft") for it in left)
+        text = f"這個資料夾 {len(items)} 段錄影：已上傳 {up} 段"
+        text += f"（其中 {hand} 段是手動上傳的）" if hand else ""
+        text += f"，還沒傳 {len(left) - known} 段"
+        if drafts:
+            text += f"，另有 {drafts} 段在頻道上是草稿（沒填設定，可以用比對結果裡的「修正手動上傳的影片…」補上）"
+        if known - drafts:
+            text += f"，另有 {known - drafts} 段頻道上已經有了（只有大小相同、檔名不同，沒有記為已上傳）"
         return {"level": "ok" if not left else "info", "text": text, "rows": []}
 
     def _verify_videos(self, uploaded, got):
@@ -476,14 +667,15 @@ class Api:
         if not todo:
             return self._replan()
         self._say(f"更新 {len(todo)} 支影片的標題 / 說明到 YouTube …")
-        done = 0
-        for it in todo:
+        done, sent = 0, {}  # video id -> the snippet YouTube answered with
+        for k, it in enumerate(todo, 1):
             fields = set(it["yt_pending"])
             vids = it["video_ids"]
+            self._emit("push", done=k, total=len(todo), title=it["title"])
             try:
                 for n, vid in enumerate(vids, 1):
                     title = it["title"] + (f" ({n}/{len(vids)})" if len(vids) > 1 else "")
-                    self._with_sign_in(lambda yt, v=vid, t=title: youtube.update_snippet(
+                    sent[vid] = self._with_sign_in(lambda yt, v=vid, t=title: youtube.update_snippet(
                         yt, v, title=t if "title" in fields else None,
                         description=it["description"] if "description" in fields else None))
             except youtube.QuotaExceeded:
@@ -501,6 +693,16 @@ class Api:
                 self._say(f"  拍攝日期 {it['recording_date'][:10]} 要到 Studio 改（YouTube 上是 {yt_date}）")
         self._say(f"已更新 {done} / {len(todo)} 支")
         self._sync_youtube()  # read back what YouTube has now
+        # a read right after an update can still give the old title (seen in real use):
+        # what the update answered is what YouTube has
+        for it in todo:
+            rec = self._store.lookup(it) or {}
+            saved = dict(rec.get("yt") or {})
+            fresh = {v: {**saved[v], "title": sent[v].get("title", saved[v].get("title")),
+                         "description": sent[v].get("description", saved[v].get("description"))}
+                     for v in it["video_ids"] if v in sent and saved.get(v)}
+            if fresh:
+                self._store.update(it, yt={**saved, **fresh})
         return self._replan()
 
     def refresh_youtube(self):
@@ -635,6 +837,7 @@ class Api:
                                          "size": sum(c.size for c in r.clips)})
                      for r in self._recs}
         self._overrides = {k: ov for k, fp in self._fps.items() if (ov := self._edits.get(fp))}
+        self._adopt_hand()  # by the last comparison, if there is one; reads nothing
         self._replan()
         self._sync_youtube()
         res = self._replan()
@@ -718,6 +921,28 @@ class Api:
                 continue
             lt = f"{date}T{it['local'][11:16]}" if it["time_known"] else date
             self.edit([i], {"local_time": lt})
+        return self._replan()
+
+    def fix_title_times(self, ids: list[str]):
+        """Uploaded videos whose title starts with the wrong date / time: put the file's there,
+        keep the rest of the title, and mark it for 更新到 YouTube."""
+        by_id = {it["id"]: it for it in self._items}
+        for i in ids:
+            it = by_id.get(i)
+            if it and it.get("title_should") and not self._locked(i):
+                self.edit([i], {"title": it["title_should"]})
+        return self._replan()
+
+    def title_from_previous(self, item_id: str):
+        """Take the row above's title, with this recording's own date / time at its start
+        (copying by hand easily keeps the old time)."""
+        order = self._items
+        k = next((n for n, it in enumerate(order) if it["id"] == item_id), None)
+        if not k or self._locked(item_id):
+            return self._replan()
+        it, prev = order[k], order[k - 1]
+        new = retime_title(prev["title"], datetime.fromisoformat(it["local"]), it["time_known"])
+        self.edit([item_id], {"title": new})
         return self._replan()
 
     def fix_title_dates(self, ids: list[str]):
