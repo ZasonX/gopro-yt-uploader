@@ -1546,3 +1546,14 @@ def test_title_from_the_row_above_gets_this_rows_time(tmp_path, monkeypatch):
     assert api._items[1]["title"] == f"{second['local'][:16]} 範例的字"
     api.title_from_previous(first["id"])  # nothing above the first row
     assert api._items[0]["title"].endswith("範例的字")
+
+
+def test_place_names_ask_for_traditional_chinese_before_plain_zh(tmp_path, monkeypatch):
+    # Nominatim tries "zh" (mostly Simplified in OSM) right after "zh-TW": old settings move on
+    from gopro_uploader import config
+    monkeypatch.setenv("GOPRO_YT_HOME", str(tmp_path))
+    assert config.Settings().geocode_lang.startswith("zh-Hant,")
+    (tmp_path / "settings.json").write_text(json.dumps({"geocode_lang": "zh-TW,ja"}), encoding="utf-8")
+    assert config.Settings.load().geocode_lang == "zh-Hant,zh-TW,ja"
+    (tmp_path / "settings.json").write_text(json.dumps({"geocode_lang": "en"}), encoding="utf-8")
+    assert config.Settings.load().geocode_lang == "en"

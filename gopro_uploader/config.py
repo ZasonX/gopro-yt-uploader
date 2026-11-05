@@ -37,6 +37,10 @@ TITLE_FORMATS = {
 }
 
 
+# older choices that gave Simplified names (see geocode_lang)
+OLD_GEOCODE_LANGS = {"zh-TW,ja": "zh-Hant,zh-TW,ja", "zh-TW,en": "zh-Hant,zh-TW,en"}
+
+
 @dataclass
 class Settings:
     # the YouTube playlist uploads go into: picked from the channel (or created) in the app.
@@ -61,7 +65,9 @@ class Settings:
     delete_merged: bool = True
     # YouTube takes each upload at only ~3.5 MB/s (measured 2026-10-27), so send several at once (1-8)
     parallel_uploads: int = 3
-    geocode_lang: str = "zh-TW,ja"
+    # OSM's plain "zh" names are mostly Simplified, and Nominatim tries "zh" right after "zh-TW",
+    # so zh-Hant (Traditional) has to come first
+    geocode_lang: str = "zh-Hant,zh-TW,ja"
     last_folder: str = ""
     # last window position / size: {"x", "y", "width", "height", "maximized"}
     window: dict = field(default_factory=dict)
@@ -77,6 +83,7 @@ class Settings:
             s = cls(**known)
         except (OSError, ValueError, TypeError):
             return cls()
+        s.geocode_lang = OLD_GEOCODE_LANGS.get(s.geocode_lang, s.geocode_lang)
         if s.title_format not in TITLE_FORMATS:  # e.g. the short-lived "… %Z" format
             s.title_format = cls.title_format
         return s

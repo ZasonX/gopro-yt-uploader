@@ -420,10 +420,10 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
     </label>
     <label class="f">地名語言
       <select id="geocode_lang">
-        <option value="zh-TW,ja">繁中優先，其次日文</option>
+        <option value="zh-Hant,zh-TW,ja">繁中優先，其次日文</option>
         <option value="ja">日文</option>
         <option value="en">English</option>
-        <option value="zh-TW,en">繁中優先，其次英文</option>
+        <option value="zh-Hant,zh-TW,en">繁中優先，其次英文</option>
       </select>
     </label>
     <div></div>
@@ -1046,6 +1046,9 @@ function renderDetail() {
   const onYT = one && ["uploaded", "partial"].includes(one.status);
   const titleOff = sel.filter(i => i.title_should);
   const drafts = sel.filter(i => i.on_channel_draft);
+  // the place of the nearest row above the first selected one (table order)
+  const first = sel.reduce((a, i) => items.indexOf(i) < items.indexOf(a) ? i : a, sel[0]);
+  const prevAbove = prevPlace(first);
   const ytTop = !onYT ? "" : (one.yt ? ytBox(one)
     : `<div class="hint">已上傳，但還沒從 YouTube 讀過這支影片的資料。登入 YouTube 後重新掃描，就會顯示 YouTube 上的資料。</div>
        ${(one.video_ids || []).map(v => `<div class="ytlinks"><a class="btnlink" href="https://youtu.be/${esc(v)}" target="_blank">▶ 打開影片</a>
@@ -1105,6 +1108,7 @@ function renderDetail() {
         <div class="copyrow"><input id="placeInput" value="${one ? esc(one.place) : ""}" placeholder="${one ? (one.lat != null ? "按下方「查詢地名」，會從座標查出建議地名" : "沒有 GPS，可以用下面的搜尋") : "輸入後套用到全部已選的錄影"}">
           ${one?.place ? `<button class="mini" data-copy="${esc(one.place)}">複製</button>` : ""}</div>
       </label>
+      ${prevAbove ? `<button class="mini" id="btnPrevPlace" style="margin:0 0 6px" title="${esc(`${prevAbove.from.files[0]}：${prevAbove.place}`)}">沿用上一支的地點（${esc(prevAbove.place)}）${sel.length > 1 ? `，套用到 ${sel.length} 段` : ""}</button>` : ""}
       <div class="hint">座標：${one?.lat != null ? `${one.lat.toFixed(5)}, ${one.lon.toFixed(5)}（${LSRC[one.loc_source] || ""}，用來查地名；Studio 不能用座標搜尋）` : sel.length > 1 ? "—" : "沒有"}</div>
       <label class="f"><span title="會同時設定名稱和座標">搜尋地點</span>
         <div style="display:flex;gap:6px"><input id="searchQ" placeholder="例如：地標、車站名稱（會同時設定名稱和座標）" style="flex:1"><button id="btnSearch">搜尋</button></div>
@@ -1151,6 +1155,8 @@ function renderDetail() {
   if (prevTitle) prevTitle.onclick = async () => setPlan(await call("title_from_previous", one.id));
   const fixTimes = $("#btnFixTimes");
   if (fixTimes) fixTimes.onclick = async () => setPlan(await call("fix_title_times", titleOff.map(i => i.id)));
+  const prevPl = $("#btnPrevPlace");
+  if (prevPl) prevPl.onclick = () => applyLocation(prevAbove.lat, prevAbove.lon, prevAbove.place);
   const fixDrafts = $("#btnFixDrafts");
   if (fixDrafts) fixDrafts.onclick = () => openFix(drafts.map(i => i.id));
   // date + 24h clock; an empty clock means "date only"
@@ -1220,6 +1226,16 @@ function wireCopy(root) {
     finally { b.disabled = false; b.textContent = "↻ 重新讀取"; }
   });
 }
+// where a row was shot, as far as known: its YouTube location (set in Studio), else its own place
+function placeOf(i) {
+  const y = (i.yt || []).find(y => !y.missing && y.lat != null && y.place);
+  if (y) return { place: y.place, lat: y.lat, lon: y.lon, from: i };
+  return i.place && i.lat != null ? { place: i.place, lat: i.lat, lon: i.lon, from: i } : null;
+}
+function prevPlace(it) {  // the nearest row above with a place
+  for (let k = items.indexOf(it) - 1; k >= 0; k--) { const p = placeOf(items[k]); if (p) return p; }
+  return null;
+}
 function ytBox(it) {
   const row = (k, v) => `<div><span class="hint">${k}</span><span>${v}</span></div>`;
   const when = it.yt_checked ? it.yt_checked.replace("T", " ") : "";
@@ -1231,9 +1247,13 @@ function ytBox(it) {
       ${row("說明", y.description ? `<span class="desc">${esc(y.description)}</span>` : '<span class="hint">（空白）</span>')}
       ${row("瀏覽權限", PRIVACY[y.privacy] || esc(y.privacy || "—"))}
       ${row("拍攝日期", esc(y.recording_date || "—"))}
-      ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>`
-        : `<span class="warn">還沒設定</span>${it.place ? `<span class="hint">　建議（點一下複製，貼到 Studio 的「影片地點」搜尋）：</span>
-            <button class="mini" data-copy="${esc(it.place)}" title="複製地名">${esc(it.place)}</button>` : ""}`)}
+      ${row("地點", y.lat != null ? `${esc(y.place || "（沒有名稱）")} <span class="hint">${y.lat.toFixed(5)}, ${y.lon.toFixed(5)}</span>
+          ${y.place ? `<button class="mini" data-copy="${esc(y.place)}" title="複製地名，貼到別支影片在 Studio 的「影片地點」">複製</button>` : ""}`
+        : (() => {  // nothing set yet: suggest this row's own place, else the nearest one above
+            const own = it.place ? { place: it.place } : null, p = own || prevPlace(it);
+            return `<span class="warn">還沒設定</span>${p ? `<span class="hint">　建議${own ? "" : `（和前面 ${esc(p.from.files[0])} 一樣）`}，點一下複製，貼到 Studio 的「影片地點」搜尋：</span>
+              <button class="mini" data-copy="${esc(p.place)}" title="複製地名">${esc(p.place)}</button>` : ""}`;
+          })())}
       ${row("標題和說明的語言", LANG[y.title_language] || esc(y.title_language || "—"))}
       ${row("影片語言", LANG[y.audio_language] || esc(y.audio_language || "—"))}
       <div class="ytlinks">
