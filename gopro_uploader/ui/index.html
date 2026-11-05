@@ -92,6 +92,7 @@ a.ext:hover { text-decoration: underline; }
 .st.oncopy { color: var(--warn); }
 .st.pendingyt { color: var(--warn); }
 #btnFixTimes { display: block; margin: 6px 0 2px; }
+#btnFixTicked { background: var(--warn); border-color: var(--warn); color: var(--panel); font-weight: 600; }
 /* a draft's main step: yellow like the 草稿 marks, so it isn't mistaken for 開始上傳 / 更新到 YouTube */
 .draftrow { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
 #btnFixDrafts { flex: 1; padding: 8px 10px; background: var(--warn); border-color: var(--warn); color: var(--panel); font-weight: 600; }
@@ -314,6 +315,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
       <option value="5">同時 5 支</option><option value="6">同時 6 支</option>
       <option value="7">同時 7 支</option><option value="8">同時 8 支</option>
     </select>
+    <button id="btnFixTicked" hidden title="打勾的草稿（手動上傳、什麼都沒填）：補上標題、說明等設定，不會重新上傳">修正到 YouTube…</button>
     <button id="btnUpload" class="primary" disabled>開始上傳</button>
   </div>
   <div id="logbar" title="點一下展開 / 收合完整紀錄"><span class="last"></span><span class="tog">紀錄 ▴</span></div>
@@ -769,7 +771,7 @@ function render(opts = {}) {
   const shown = visibleItems();
   tb.innerHTML = shown.map((it, k) => (filterKey ? "" : gapRow(shown[k - 1], it)) + `
     <tr class="row ${selected.has(it.id) ? "sel" : ""} ${it.status === "uploaded" ? "done" : ""}" data-id="${esc(it.id)}">
-      <td class="inccell" title="打勾 = 按「開始上傳」時上傳"><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
+      <td class="inccell" title="打勾 = 要處理：沒傳過的按「開始上傳」上傳；草稿按「修正到 YouTube」補上設定，不會重新上傳"><input type="checkbox" class="inc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}></td>
       <td class="status">${statusHtml(it)}</td>
       <td class="title">${(() => {  // display only: titles are edited in the panel on the right
         const warn = it.title_date_mismatch && !["uploading", "merging", "uploaded", "partial"].includes(it.status);
@@ -792,11 +794,14 @@ function render(opts = {}) {
   summary(); refreshButtons();
 }
 
+// a tick means "deal with this row": upload it, or, for a draft already on YouTube, fix it there
+const toUpload = () => items.filter(i => i.include && i.status !== "uploaded" && !i.on_channel_draft);
+const toFix = () => items.filter(i => i.include && i.on_channel_draft);
 function summary() {
-  const inc = items.filter(i => i.include && i.status !== "uploaded");
+  const inc = toUpload(), fix = toFix();
   const done = items.filter(i => i.status === "uploaded" || onChannelWhole(i)).length;
   $("#summary").textContent = items.length
-    ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）` : "";
+    ? `${items.length} 段錄影 · 已上傳 ${done} · 本次要傳 ${inc.length} 段（${fmtSize(inc.reduce((a, i) => a + i.size, 0))}）${fix.length ? ` · 要修正 ${fix.length} 支草稿` : ""}` : "";
   const vis = visibleItems();
   const can = vis.filter(i => !i.on_channel?.length);
   $("#chkAll").checked = can.length > 0 && can.every(i => i.include);
@@ -805,10 +810,12 @@ function refreshButtons() {
   const has = items.length > 0;
   $("#btnScan").disabled = !S.last_folder || uploading;
   $("#btnPick").disabled = uploading;
-  const todo = items.filter(i => i.include && i.status !== "uploaded").length;
+  const todo = toUpload().length, fix = toFix().length;
+  $("#btnFixTicked").hidden = uploading || !fix;
+  $("#btnFixTicked").textContent = `修正到 YouTube（${fix} 支）…`;
   $("#btnUpload").disabled = !has || uploading || !todo;
   $("#btnUpload").textContent = todo ? `開始上傳（${todo} 段）` : "開始上傳";
-  $("#btnUpload").title = todo ? "上傳表格中「上傳」欄打勾的錄影" : "先在表格的「上傳」欄，或右側的「要上傳」打勾";
+  $("#btnUpload").title = todo ? "上傳表格中打勾、還沒傳過的錄影（打勾的草稿不會上傳，用旁邊的「修正到 YouTube」）" : "先在表格的「上傳」欄，或右側的「要上傳」打勾";
   // the upload group swaps: [同時 N 支][開始上傳] ⇄ [傳完就停止][停止]
   $("#btnUpload").hidden = $("#selParallel").hidden = uploading;
   $("#btnCancel").hidden = $("#btnStopAfter").hidden = !uploading;
@@ -1018,7 +1025,7 @@ function renderNav() {
       <small>${esc(it.files.join(" + "))}</small></span>
     ${onYT ? `<span class="inc on">✓ ${STATUS[it.status]}</span>`
       : `<label class="inc ${it.include ? "on" : ""}" title="打勾的錄影，會在按「開始上傳」時上傳">
-           <input type="checkbox" id="navInc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}>要上傳</label>`}
+           <input type="checkbox" id="navInc" ${it.include ? "checked" : ""} ${uploading ? "disabled" : ""}>${it.on_channel_draft ? "要修正" : "要上傳"}</label>`}
     <button id="navNext" ${i === vis.length - 1 ? "disabled" : ""} title="鍵盤 ↓">下一支 ▶</button>`;
   $("#navPrev").onclick = () => step(-1);
   $("#navNext").onclick = () => step(1);
@@ -1045,7 +1052,7 @@ function renderDetail() {
   }
   const onYT = one && ["uploaded", "partial"].includes(one.status);
   const titleOff = sel.filter(i => i.title_should);
-  const drafts = sel.filter(i => i.on_channel_draft);
+  const drafts = sel.filter(i => i.on_channel_draft), ticked = toFix();
   // the place of the nearest row above the first selected one (table order)
   const first = sel.reduce((a, i) => items.indexOf(i) < items.indexOf(a) ? i : a, sel[0]);
   const prevAbove = prevPlace(first);
@@ -1065,7 +1072,7 @@ function renderDetail() {
     ${locked ? '<div class="hint warn">已選的錄影中有正在上傳的，先不能改。</div>' : ""}
     ${one?.status === "missing" ? '<div class="hint warn">這支影片之前上傳過，但在 YouTube 上已經刪除了。可以修改後重新勾選上傳。</div>' : ""}
     ${drafts.length ? `<div class="hint warn">${one ? "已手動上傳，但還是草稿" : `已選的錄影中有 ${drafts.length} 段已手動上傳，但還是草稿`}（標題、說明都沒填）。改好標題後按下面的按鈕補上設定。
-       <div class="draftrow"><button id="btnFixDrafts">修正到 YouTube${drafts.length > 1 ? `（${drafts.length} 段）` : ""}…</button>
+       <div class="draftrow"><button id="btnFixDrafts">${ticked.length ? `修正到 YouTube（打勾的 ${ticked.length} 支）…` : `修正到 YouTube${drafts.length > 1 ? `（${drafts.length} 段）` : ""}…`}</button>
        ${one ? `<a class="ext" href="https://studio.youtube.com/video/${esc(one.on_channel[0].id)}/edit" target="_blank">在 Studio 打開 ↗</a>` : ""}</div></div>` : ""}
     ${titleOff.length ? `<div class="hint warn">⚠ ${one ? `YouTube 上的標題時間和檔案不同，應該是「${esc(one.title_should)}」。`
         : `已選的錄影中有 ${titleOff.length} 段，YouTube 上的標題時間和檔案不同。`}
@@ -1158,7 +1165,7 @@ function renderDetail() {
   const prevPl = $("#btnPrevPlace");
   if (prevPl) prevPl.onclick = () => applyLocation(prevAbove.lat, prevAbove.lon, prevAbove.place);
   const fixDrafts = $("#btnFixDrafts");
-  if (fixDrafts) fixDrafts.onclick = () => openFix(drafts.map(i => i.id));
+  if (fixDrafts) fixDrafts.onclick = () => openFix((ticked.length ? ticked : drafts).map(i => i.id));
   // date + 24h clock; an empty clock means "date only"
   const clockOk = v => !v || /^([01]?\d|2[0-3]):?[0-5]\d$/.test(v);
   const hhmm = v => v.includes(":") ? v.padStart(5, "0") : v.padStart(4, "0").replace(/(\d\d)(\d\d)/, "$1:$2");
@@ -1343,7 +1350,7 @@ $("#btnTools").onclick = e => {
   ]);
 };
 $("#btnUpload").onclick = async () => {
-  const list = items.filter(i => i.include && i.status !== "uploaded"), n = list.length;
+  const list = toUpload(), n = list.length;
   const names = list.slice(0, 10).map(i => `・${i.title}（${i.files.join(" + ")}）`).join("\n")
     + (n > 10 ? `\n…還有 ${n - 10} 段` : "");
   if (!S.playlist_id && !S.no_playlist) { alert("請先在上方「播放清單」選擇要加入的播放清單（或選「不加入播放清單」）。"); $("#btnPlaylist").click(); return; }
@@ -1357,6 +1364,7 @@ $("#btnUpload").onclick = async () => {
   $("#upbar").innerHTML = "<b>準備上傳…</b>"; $("#upbar").classList.add("on");
   uploading = true; render(); await call("start_upload");
 };
+$("#btnFixTicked").onclick = () => openFix(toFix().map(i => i.id));
 $("#btnStopAfter").onclick = async () => { stopAfter = await call("stop_after_current", !stopAfter); refreshButtons(); };
 $("#btnCancel").onclick = () => {
   if (!confirm("現在就停止嗎？\n\n正在傳的會中斷，下次開始上傳時從中斷處接著傳（一週內有效；改了標題或說明就要從頭傳）。\n已經傳完的不受影響。")) return;

@@ -456,8 +456,10 @@ class Api:
             self._replan()
             # the title edited here is on YouTube now: it isn't a pending change any more
             for it in self._items:
-                if it["id"] in fixed and it["status"] == "uploaded" and self._overrides.get(it["id"], {}).pop("title", None):
-                    self._save_edits(it["id"])
+                if it["id"] in fixed and it["status"] == "uploaded":
+                    self._overrides.get(it["id"], {}).pop("include", None)  # its tick meant "fix it": done
+                    if self._overrides.get(it["id"], {}).pop("title", None):
+                        self._save_edits(it["id"])
             self._replan()
             self._sync_youtube()
         return self.hand_fixes()
@@ -1177,7 +1179,8 @@ class Api:
     # ---------------------------------------------------------- uploading
     def _upload_all(self):
         s = self._settings
-        todo = [i for i in self._items if i["include"] and i["status"] != "uploaded"]
+        # a ticked draft (on YouTube already, nothing filled in) is for 修正, never uploaded again
+        todo = [i for i in self._items if i["include"] and i["status"] != "uploaded" and not i.get("on_channel_draft")]
         if not todo:
             self._emit("done", msg="沒有要上傳的影片")
             return

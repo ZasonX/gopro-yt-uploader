@@ -1217,13 +1217,13 @@ def _hand_api(tmp_path, monkeypatch):
 
 
 def test_hand_uploads_are_fixed_in_file_order_and_placed_by_it_in_the_playlist(tmp_path, monkeypatch):
-    api, _, applied, added = _hand_api(tmp_path, monkeypatch)
+    api, events, applied, added = _hand_api(tmp_path, monkeypatch)
     before = api.hand_fixes()
     assert [r["id"] for r in before["rows"]] == ["H1", "H2", "H3"] and all(r["tick"] for r in before["rows"])
     assert [r["in_list"] for r in before["rows"]] == [False, True, False]
     # the main table opens the fix for the rows selected there, by row id; a title edited there is used
     assert [r["item"] for r in before["rows"]] == [it["id"] for it in api._items]
-    api.edit([api._items[0]["id"]], {"title": "2025-04-01 10:00 edited by hand"})
+    api.edit([api._items[0]["id"]], {"title": "2025-04-01 10:00 edited by hand", "include": True})
     titles = [it["title"] for it in api._items]
     assert titles[0] == "2025-04-01 10:00 edited by hand"
     after = api.fix_hand_uploads(["H3", "H1"])
@@ -1242,6 +1242,13 @@ def test_hand_uploads_are_fixed_in_file_order_and_placed_by_it_in_the_playlist(t
     assert {r["id"]: r["tick"] for r in after["rows"]} == {"H2": True}
     assert [(it["status"], it["video_ids"], it["hand"]) for it in api._items] == [
         ("uploaded", ["H1"], True), ("pending", [], False), ("uploaded", ["H3"], True)]
+    # its tick meant "fix it", so it is gone; a ticked draft is never uploaded again
+    assert api._items[0]["include"] is False
+    api.edit([api._items[1]["id"]], {"include": True})
+    api._items[1]["on_channel_draft"] = True  # the fake files are too small to be matched by size
+    events.clear()
+    api._upload_all()
+    assert [d["msg"] for e, d in events if e == "done"] == ["沒有要上傳的影片"]
 
 
 def test_fixing_hand_uploads_stops_at_the_quota(tmp_path, monkeypatch):
