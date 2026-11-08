@@ -462,9 +462,16 @@ def _upload_api(tmp_path, monkeypatch, n, uploader):
     api.edit(ids, {"include": True})
     api.choose_playlist("PL25", "2025 日本")
     added = []
+    api.playlist_now = []  # the fake playlist, in its order
+
+    def add(yt, pl, vid, position=None):
+        added.append((pl, vid))
+        api.playlist_now.insert(len(api.playlist_now) if position is None else position, vid)
+
     monkeypatch.setattr(api, "_signed_in", lambda: "yt")
     monkeypatch.setattr(youtube, "service_copy", lambda yt: yt)
-    monkeypatch.setattr(youtube, "add_to_playlist", lambda yt, pl, vid: added.append((pl, vid)))
+    monkeypatch.setattr(youtube, "add_to_playlist", add)
+    monkeypatch.setattr(youtube, "playlist_videos", lambda yt, pl: list(api.playlist_now))
     monkeypatch.setattr(youtube, "upload", uploader)
     return api, events, added
 
@@ -492,6 +499,40 @@ def test_parallel_uploads_keep_file_order_in_the_playlist(tmp_path, monkeypatch)
     assert events[-1][0] == "done" and "完成 4 / 4" in events[-1][1]["msg"]
     assert not any(r.get("playlist_add") or r.get("resume") for r in api._store.data.values())
     assert any("平均" in d.get("msg", "") and "MB/s" in d["msg"] for k, d in events if k == "log")
+
+
+def test_uploads_go_into_the_playlist_at_their_place_not_at_the_end(tmp_path, monkeypatch):
+    def upload(yt, path, body, progress=None, cancel=None, resume_uri=None, on_session=None, before_last=None):
+        return f"V{int(os.path.basename(path)[4:8])}"
+
+    api, events, added = _upload_api(tmp_path, monkeypatch, 2, upload)
+    api.playlist_now = ["OTHER", "LATER"]  # LATER: a video of this folder that comes after both
+    orig = api._playlist_rank
+    monkeypatch.setattr(api, "_playlist_rank", lambda: {**orig(), "LATER": (99, 0)})
+    api._upload_all()
+    assert api.playlist_now == ["OTHER", "V1", "V2", "LATER"]
+
+
+def test_sort_playlist_moves_only_this_folders_videos_into_table_order(tmp_path, monkeypatch):
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    api = Api("unused.log")
+    api._settings.playlist_id, api._settings.playlist = "PL25", "2025 日本"
+    now = [("e1", "A"), ("e2", "X"), ("e3", "C"), ("e4", "B")]  # X isn't from this folder
+    moves = []
+
+    def move(yt, pl, entry, vid, pos):
+        moves.append((vid, pos))
+        k = next(i for i, (e, _) in enumerate(now) if e == entry)
+        now.insert(pos, now.pop(k))
+
+    monkeypatch.setattr(api, "_playlist_rank", lambda: {"A": (0, 0), "B": (1, 0), "C": (2, 0)})
+    monkeypatch.setattr(api, "_signed_in", lambda: "yt")
+    monkeypatch.setattr(youtube, "service_copy", lambda yt: yt)
+    monkeypatch.setattr(youtube, "playlist_entries", lambda yt, pl: list(now))
+    monkeypatch.setattr(youtube, "move_in_playlist", move)
+    assert api.sort_playlist() == {"ok": True, "moved": 1}
+    assert [v for _, v in now] == ["A", "X", "B", "C"] and moves == [("B", 2)]
 
 
 def test_a_failure_pauses_the_batch_to_keep_the_order(tmp_path, monkeypatch):
@@ -1244,6 +1285,8 @@ def test_hand_uploads_are_fixed_in_file_order_and_placed_by_it_in_the_playlist(t
         ("uploaded", ["H1"], True), ("pending", [], False), ("uploaded", ["H3"], True)]
     # its tick meant "fix it", so it is gone; a ticked draft is never uploaded again
     assert api._items[0]["include"] is False
+    # remembered as changed by this app, to tell it from hand uploads filled in in Studio
+    assert api._items[0]["by_app"].get("fixed") and not api._items[1].get("by_app")
     api.edit([api._items[1]["id"]], {"include": True})
     api._items[1]["on_channel_draft"] = True  # the fake files are too small to be matched by size
     events.clear()
@@ -1564,3 +1607,22 @@ def test_place_names_ask_for_traditional_chinese_before_plain_zh(tmp_path, monke
     assert config.Settings.load().geocode_lang == "zh-Hant,zh-TW,ja"
     (tmp_path / "settings.json").write_text(json.dumps({"geocode_lang": "en"}), encoding="utf-8")
     assert config.Settings.load().geocode_lang == "en"
+
+
+def test_what_this_app_did_to_hand_uploads_is_found_in_old_logs(tmp_path):
+    from gopro_uploader.app import by_log
+    (tmp_path / "20250401-100000.log").write_text("\n".join([
+        "2025-04-01 10:00:01,000 INFO app: 修改 GX010001.MP4：標題 → 2025-04-01 09:00 範例",
+        "2025-04-01 10:00:05,000 INFO app: 更新 2 支影片的標題 / 說明到 YouTube …",
+        "2025-04-01 10:00:06,000 INFO app: ✓ 已更新：2025-04-01 09:00 範例",
+        "2025-04-01 10:00:07,000 INFO app: ✓ 已更新：2025-04-01 09:30 JST 範例",  # retimed: found by title
+        "2025-04-01 10:05:00,000 INFO app: 修正 1 支手動上傳的影片…",
+        "2025-04-01 10:05:03,000 INFO app: ✓ 2025-04-01 10:00 範例  https://youtu.be/VIDEO_ID_03",
+        "2025-04-01 10:05:03,500 INFO app: 修正完成 1 / 1 支",
+        "2025-04-01 10:06:00,000 INFO app: ✓ https://youtu.be/VIDEO_ID_04  12 MB",  # an upload, not a fix
+    ]), encoding="utf-8")
+    got = by_log(str(tmp_path), {"VIDEO_ID_03": "fp3", "VIDEO_ID_04": "fp4"}, {"GX010001.MP4": "fp1"},
+                 {"2025-04-01 09:30 JST 範例": "fp2"})
+    assert got == {"fp1": {"pushed": "2025-04-01T10:00"}, "fp2": {"pushed": "2025-04-01T10:00"},
+                   "fp3": {"fixed": "2025-04-01T10:05"}}
+    assert by_log(str(tmp_path / "none"), {}, {}) == {}

@@ -73,6 +73,8 @@ class Settings:
     window: dict = field(default_factory=dict)
     # [{"place", "lat", "lon"}], newest first: quick picks under the place search
     recent_places: list[dict] = field(default_factory=list)
+    # by_app (what this app did to hand uploads) was filled in from the old run logs once
+    by_app_backfilled: bool = False
 
     @classmethod
     def load(cls) -> "Settings":

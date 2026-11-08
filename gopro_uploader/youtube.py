@@ -307,13 +307,25 @@ def read_playlist(yt, playlist_id: str, since: str = "", on_page=None, cancel=No
 
 def playlist_videos(yt, playlist_id: str) -> list[str]:
     """The video ids in a playlist, in its order (1 quota unit per 50)."""
+    return [vid for _, vid in playlist_entries(yt, playlist_id)]
+
+
+def playlist_entries(yt, playlist_id: str) -> list[tuple[str, str]]:
+    """(playlist item id, video id) for each entry, in the playlist's order (1 quota unit per 50)."""
     out = []
     req = yt.playlistItems().list(part="contentDetails", playlistId=playlist_id, maxResults=50)
     while req is not None:
         resp = _execute(req)
-        out += [i["contentDetails"]["videoId"] for i in resp.get("items", [])]
+        out += [(i["id"], i["contentDetails"]["videoId"]) for i in resp.get("items", [])]
         req = yt.playlistItems().list_next(req, resp)
     return out
+
+
+def move_in_playlist(yt, playlist_id: str, entry_id: str, video_id: str, position: int) -> None:
+    """Move one playlist entry to position (0 = first), about 50 quota units."""
+    _execute(yt.playlistItems().update(part="snippet", body={
+        "id": entry_id, "snippet": {"playlistId": playlist_id, "position": position,
+                                    "resourceId": {"kind": "youtube#video", "videoId": video_id}}}))
 
 
 def service_copy(yt):

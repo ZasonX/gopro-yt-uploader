@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -63,6 +64,46 @@ def quota_reset(now: datetime | None = None) -> datetime:
 def _resource(*parts):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, *parts)
+
+
+_LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d):\d\d,\d+ \w+ app: (.*)$")
+
+
+def by_log(logs_dir: str, by_vid: dict, by_files: dict, by_title: dict | None = None) -> dict[str, dict]:
+    """From the run logs: which recordings this app fixed (修正) or sent a title to (更新到 YouTube).
+    by_vid: video id -> fingerprint; by_files: "GX01.MP4 + GX02.MP4" -> fingerprint;
+    by_title: title on YouTube now -> fingerprint, for a title changed through its time."""
+    out: dict[str, dict] = {}
+    names = sorted(f for f in os.listdir(logs_dir) if f.endswith(".log")) if os.path.isdir(logs_dir) else []
+    for name in names:
+        fixing, titled = False, {}  # title typed here -> files, for the "✓ 已更新：title" lines
+        try:
+            with open(os.path.join(logs_dir, name), encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = _LOG_LINE.match(line.rstrip())
+            if not m:
+                continue
+            when, msg = m.group(1).replace(" ", "T"), m.group(2)
+            if msg.startswith("修正 ") and msg.endswith("支手動上傳的影片…"):
+                fixing = True
+            elif msg.startswith("修正完成") or msg.startswith("已停止"):
+                fixing = False
+            elif fixing and msg.startswith("✓ ") and "https://youtu.be/" in msg:
+                fp = by_vid.get(msg.rsplit("https://youtu.be/", 1)[1].split()[0])
+                if fp:
+                    out.setdefault(fp, {}).setdefault("fixed", when)
+            elif msg.startswith("修改 ") and "：標題 → " in msg:
+                files, title = msg[3:].split("：標題 → ", 1)
+                titled[title.strip()] = files.strip()
+            elif msg.startswith("✓ 已更新："):
+                title = msg[len("✓ 已更新："):].strip()
+                fp = by_files.get(titled.get(title, "")) or (by_title or {}).get(title)
+                if fp:
+                    out.setdefault(fp, {})["pushed"] = when
+    return out
 
 
 class Api:
@@ -170,6 +211,7 @@ class Api:
         """
         rec = self._store.lookup(it) or {}
         it["hand"] = bool(rec.get("hand"))  # uploaded by hand, found by 比對
+        it["by_app"] = rec.get("by_app") or {}  # what this app did to a hand upload: {"fixed": when, "pushed": when}
         if it["status"] not in ("uploaded", "partial") or not it.get("video_ids"):
             return
         vids = it["video_ids"]
@@ -297,6 +339,33 @@ class Api:
         if new:
             self._say(f"{new} 段手動上傳的影片（檔名和大小都相同）記為已上傳")
         return new
+
+    def _note_by_app(self, it, what, when=None):
+        """Remember that this app changed a hand upload, to tell it from what was typed in Studio."""
+        rec = self._store.lookup(it) or {}
+        by = dict(rec.get("by_app") or {})
+        by[what] = when or datetime.now().isoformat(timespec="minutes")
+        self._store.update(it, by_app=by)
+
+    def _backfill_by_app(self):
+        """Fixes and title updates made before by_app was recorded, from the run logs (once)."""
+        if self._settings.by_app_backfilled:
+            return
+        by_vid = {v: fp for fp, rec in self._store.data.items() if rec.get("hand") for v in rec.get("video_ids") or []}
+        by_files = {" + ".join(rec.get("files") or []): fp for fp, rec in self._store.data.items() if rec.get("hand")}
+        by_title = {(rec.get("yt") or {}).get(v, {}).get("title"): fp for fp, rec in self._store.data.items()
+                    if rec.get("hand") for v in (rec.get("video_ids") or [])[:1] if (rec.get("yt") or {}).get(v)}
+        found = by_log(config.path("logs"), by_vid, by_files, by_title)
+        for fp, what in found.items():
+            rec = self._store.data.get(fp) or {}
+            by = dict(rec.get("by_app") or {})
+            for k, when in what.items():
+                by.setdefault(k, when)
+            self._store.patch(fp, by_app=by)
+        if found:
+            log.info("by_app filled in from the logs for %d recordings", len(found))
+        self._settings.by_app_backfilled = True
+        self._settings.save()
 
     def compare_options(self):
         """What the 比對 dialog offers. Reads only the playlist names (1 quota unit per 50)."""
@@ -457,6 +526,7 @@ class Api:
             # the title edited here is on YouTube now: it isn't a pending change any more
             for it in self._items:
                 if it["id"] in fixed and it["status"] == "uploaded":
+                    self._note_by_app(it, "fixed")
                     self._overrides.get(it["id"], {}).pop("include", None)  # its tick meant "fix it": done
                     if self._overrides.get(it["id"], {}).pop("title", None):
                         self._save_edits(it["id"])
@@ -467,10 +537,7 @@ class Api:
     def _fix_hand(self, yt, todo):
         s = self._settings
         pid = "" if s.no_playlist else s.playlist_id
-        # where each video of this folder belongs: (table row, chapter); others in the playlist stay put
-        row = {it["id"]: k for k, it in enumerate(self._items)}
-        rank = {vid: (row[it["id"]], n) for it in self._items for n, vid in enumerate(it.get("video_ids") or [])}
-        rank.update({v["id"]: (row[it["id"]], n) for v, it, n in self._hand_matches()})
+        rank = self._playlist_rank()
         listed = youtube.playlist_videos(yt, pid) if pid else []
         self._say(f"修正 {len(todo)} 支手動上傳的影片…")
         done, fixed = 0, set()
@@ -483,10 +550,7 @@ class Api:
                 youtube.apply_settings(yt, v["id"], self._upload_body(it, title))
                 v["title"], v["privacy"] = title, s.privacy
                 if pid and v["id"] not in listed:
-                    me = rank[v["id"]]
-                    pos = next((i for i, x in enumerate(listed) if x in rank and rank[x] > me), len(listed))
-                    youtube.add_to_playlist(yt, pid, v["id"], None if pos == len(listed) else pos)
-                    listed.insert(pos, v["id"])
+                    self._add_in_place(yt, pid, v["id"], rank, listed)
             except youtube.QuotaExceeded:
                 self._say("YouTube 今日配額用完，剩下的明天再按一次「修正」", "error")
                 break
@@ -502,6 +566,64 @@ class Api:
             self._say(f"✓ {title}  https://youtu.be/{v['id']}")
         self._say(f"修正完成 {done} / {len(todo)} 支")
         return fixed
+
+    def _playlist_rank(self):
+        """Where each video of this folder belongs in a playlist: (table row, chapter).
+        Videos not in it have no rank and stay where they are."""
+        row = {it["id"]: k for k, it in enumerate(self._items)}
+        # state.json too: during an upload the row in _items may be an older copy than the worker's
+        rank = {vid: (row[it["id"]], n) for it in self._items
+                for n, vid in enumerate(it.get("video_ids") or (self._store.lookup(it) or {}).get("video_ids") or [])}
+        rank.update({v["id"]: (row[it["id"]], n) for v, it, n in self._hand_matches()})
+        return rank
+
+    @staticmethod
+    def _add_in_place(yt, pid, vid, rank, listed):
+        """Insert vid before the first ranked video that comes after it (else append); keeps listed in step."""
+        me = rank.get(vid)
+        pos = len(listed) if me is None else next(
+            (i for i, x in enumerate(listed) if x in rank and rank[x] > me), len(listed))
+        youtube.add_to_playlist(yt, pid, vid, None if pos == len(listed) else pos)
+        listed.insert(pos, vid)
+
+    @staticmethod
+    def _sorted_order(ids, rank):
+        """The playlist order with this folder's videos sorted among the places they take up now."""
+        mine = sorted((x for x in ids if x in rank), key=rank.__getitem__)
+        it = iter(mine)
+        return [next(it) if x in rank else x for x in ids]
+
+    def sort_playlist(self):
+        """Move this folder's videos in the picked playlist into table order (about 50 units a move)."""
+        s = self._settings
+        if s.no_playlist or not s.playlist_id:
+            return {"ok": False, "error": "沒有選播放清單"}
+        rank = self._playlist_rank()
+
+        def run(yt):
+            entries = youtube.playlist_entries(yt, s.playlist_id)
+            want = self._sorted_order([v for _, v in entries], rank)
+            moved = 0
+            for i, vid in enumerate(want):
+                if entries[i][1] == vid:
+                    continue
+                k = next(j for j in range(i, len(entries)) if entries[j][1] == vid)
+                youtube.move_in_playlist(yt, s.playlist_id, entries[k][0], vid, i)
+                entries.insert(i, entries.pop(k))
+                moved += 1
+            return moved
+
+        try:
+            moved = self._with_sign_in(lambda yt: run(youtube.service_copy(yt)))  # uploads may be running
+        except youtube.QuotaExceeded:
+            self._say("YouTube 今日配額用完，明天再排一次", "error")
+            return {"ok": False, "error": "配額用完"}
+        except Exception as e:  # noqa: BLE001
+            log.exception("sorting the playlist failed")
+            self._say(f"排播放清單失敗：{e}", "error")
+            return {"ok": False, "error": str(e)}
+        self._say(f"播放清單「{s.playlist}」已排好順序（移動 {moved or 0} 支）")
+        return {"ok": True, "moved": moved or 0}
 
     def _save_compared(self, listed=None):
         """Keep the last comparison in step with what was just changed on YouTube."""
@@ -627,8 +749,10 @@ class Api:
                            "text": f"{len(out_rows)} 支不在{name}{note}", "rows": out_rows})
         else:
             checks.append({"level": "ok", "text": f"都在{name}裡（清單共 {len(ids)} 支）", "rows": []})
-        checks.append({"level": "bad", "text": f"{name}的順序不對，從這段開始和表格不同", "rows": [self._row(wrong)]} if wrong
-                      else {"level": "ok", "text": f"{name}的順序和表格相同", "rows": []})
+        sortable = playlist_id == self._settings.playlist_id and not self._settings.no_playlist
+        checks.append({"level": "bad", "text": f"{name}的順序不對，從這段開始和表格不同", "rows": [self._row(wrong)],
+                       **({"action": {"call": "sort_playlist", "label": "排好順序（每移動一支約 50 配額單位）"}} if sortable else {})}
+                      if wrong else {"level": "ok", "text": f"{name}的順序和表格相同", "rows": []})
         if dead:
             checks.append({"level": "warn", "text": f"{name}裡有 {len(dead)} 個已刪除或看不到的影片，要到 YouTube 上移除",
                            "rows": [{"label": v, "url": f"https://www.youtube.com/playlist?list={playlist_id}"} for v in dead[:20]]})
@@ -688,6 +812,8 @@ class Api:
                 self._say(f"更新失敗（{' + '.join(it['files'])}）：{e}", "error")
                 continue
             self._store.update(it, yt_dirty=[])
+            if it.get("hand"):
+                self._note_by_app(it, "pushed")
             done += 1
             self._say(f"✓ 已更新：{it['title']}")
             yt_date = ((it.get("yt") or [{}])[0] or {}).get("recording_date")
@@ -840,6 +966,7 @@ class Api:
                      for r in self._recs}
         self._overrides = {k: ov for k, fp in self._fps.items() if (ov := self._edits.get(fp))}
         self._adopt_hand()  # by the last comparison, if there is one; reads nothing
+        self._backfill_by_app()
         self._replan()
         self._sync_youtube()
         res = self._replan()
@@ -1349,12 +1476,16 @@ class Api:
         busy = [i["files"][0].upper() for i in self._items if i["id"] in self._uploading_ids]
         busy += [i["files"][0].upper() for i in held]
         first_busy = min(busy) if busy else None
+        rank, listed = self._playlist_rank(), {}
         for first, fp, add in ready:
             if first_busy and first > first_busy:
                 break  # an earlier recording is still uploading: keep the order
             ids = list(add["ids"])
+            if add["playlist"] not in listed:  # its place among what is there (an older trip's later videos…)
+                listed[add["playlist"]] = youtube.playlist_videos(yt, add["playlist"])
             while ids:
-                youtube.add_to_playlist(yt, add["playlist"], ids[0])
+                if ids[0] not in listed[add["playlist"]]:
+                    self._add_in_place(yt, add["playlist"], ids[0], rank, listed[add["playlist"]])
                 ids.pop(0)
                 self._store.patch(fp, playlist_add={**add, "ids": ids} if ids else None)
 

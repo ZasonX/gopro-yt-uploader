@@ -91,6 +91,7 @@ a.ext:hover { text-decoration: underline; }
 .st.resumable { color: var(--muted); }
 .st.oncopy { color: var(--warn); }
 .st.pendingyt { color: var(--warn); }
+.st.uploaded.byapp { color: var(--accent2); }  /* a hand upload this app has changed */
 #btnFixTimes { display: block; margin: 6px 0 2px; }
 #btnFixTicked { background: var(--warn); border-color: var(--warn); color: var(--panel); font-weight: 600; }
 /* a draft's main step: yellow like the 草稿 marks, so it isn't mistaken for 開始上傳 / 更新到 YouTube */
@@ -234,6 +235,7 @@ dialog .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 1
 .vcheck .ic.warn { color: var(--warn); } .vcheck .ic.info { color: var(--muted); }
 .vcheck details { grid-column: 2; font-size: 12px; margin-top: 2px; }
 .vcheck details div { padding: 2px 0; }
+.vcheck .vact { margin-left: 8px; padding: 1px 10px; font-size: 12px; }
 .plbtn { min-width: 150px; max-width: 240px; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .plbtn.unset { border-color: var(--accent); color: var(--accent); }
 .pllist { display: flex; flex-direction: column; gap: 4px; max-height: 45vh; overflow: auto; }
@@ -639,11 +641,23 @@ function onChannelHtml(it) {  // not uploaded from here, but the channel has a v
   return `<span class="st oncopy" title="${esc(it.on_channel_draft ? "手動上傳了，但什麼都沒填。" + tip : tip)}">${label}</span>
     <a class="ext" href="https://youtu.be/${esc(v.id)}" target="_blank" title="${esc(tip)}">YouTube ↗</a>`;
 }
+// a hand upload: as typed in Studio, or changed by this app since (fixed from a draft / title sent)
+const NUM = n => "①②③④⑤⑥⑦⑧⑨⑩"[n] || `(${n + 1})`;
+// a row that is several videos on YouTube shows the recording's title, without the first one's " (1/N)"
+const rowTitle = it => it.video_ids?.length > 1 ? it.title.replace(/ \(1\/\d+\)$/, "") : it.title;
+function handHtml(it) {
+  const b = it.by_app || {}, when = t => t ? t.replace("T", " ") : "";
+  const what = b.fixed ? "→程式修正" : b.pushed ? "・程式改過標題" : "";
+  const tip = ["以前手動上傳的（比對時檔名和大小都相同）",
+    b.fixed ? `${when(b.fixed)} 由這個程式從草稿補上設定、加進播放清單` : "",
+    b.pushed ? `${when(b.pushed)} 由這個程式更新標題 / 說明` : "",
+    !b.fixed && !b.pushed ? "標題等設定是在 Studio 自己填的，這個程式沒改過" : ""].filter(Boolean).join("\n");
+  return `<span class="st uploaded${what ? " byapp" : ""}" title="${esc(tip)}">已上傳・手動${what}</span>`;
+}
 function statusHtml(it) {
   if (it.status === "pending" && it.resume) return resumeHtml(it);
   if (it.on_channel?.length && it.status === "pending") return onChannelHtml(it);
-  let h = it.hand && it.status === "uploaded"
-    ? `<span class="st uploaded" title="以前手動上傳的（比對時檔名和大小都相同）">已上傳・手動</span>`
+  let h = it.hand && it.status === "uploaded" ? handHtml(it)
     : `<span class="st ${it.status}">${STATUS[it.status] || it.status}</span>`;
   if (it.status === "uploading" && it.progress) {
     const p = it.progress, pct = p.total ? (100 * p.done / p.total) : 0;
@@ -651,8 +665,11 @@ function statusHtml(it) {
   }
   if ((it.yt_pending || []).length)
     h += ` <span class="st pendingyt" title="在這裡改過，還沒送到 YouTube：按下方「更新到 YouTube」">待更新</span>`;
-  if (it.status === "uploaded" && it.video_ids?.length)
-    h += " " + it.video_ids.map(v => `<a class="ext" href="https://youtu.be/${v}" target="_blank" title="在瀏覽器開啟 YouTube 影片頁">YouTube ↗</a>`).join(" ");
+  if (it.status === "uploaded" && it.video_ids?.length === 1)
+    h += ` <a class="ext" href="https://youtu.be/${it.video_ids[0]}" target="_blank" title="在瀏覽器開啟 YouTube 影片頁">YouTube ↗</a>`;
+  else if (it.status === "uploaded" && it.video_ids?.length)  // each chapter is its own video (e.g. uploaded by hand)
+    h += ` <span class="ytn">YouTube ` + it.video_ids.map((v, n) => `<a class="ext" href="https://youtu.be/${v}" target="_blank"
+      title="${esc(`在瀏覽器開啟第 ${n + 1} 支（共 ${it.video_ids.length} 支）：${(it.yt || [])[n]?.title || it.files[n] || ""}`)}">${NUM(n)}↗</a>`).join(" ") + "</span>";
   if (it.status === "error" && it.error) h += ` <span title="${esc(it.error)}">ⓘ</span>`;
   return h;
 }
@@ -677,6 +694,8 @@ const CHECKS = [  // level: red = needs fixing, yellow = heads-up, gray = for in
     test: i => !!i.on_channel_draft },
   { key: "oncopy", level: "yellow", label: "已傳過", tip: "這裡沒有上傳紀錄，但頻道上有大小完全相同的影片，再傳就重複了",
     test: i => (i.on_channel || []).length > 0 && !i.on_channel_draft },
+  { key: "byapp", level: "gray", label: "程式修正過", tip: "手動上傳的影片，後來由這個程式補上設定或更新了標題",
+    test: i => i.hand && !!(i.by_app?.fixed || i.by_app?.pushed) },
   { key: "pending", level: "yellow", label: "待更新到 YouTube", tip: "已上傳的影片在這裡改了標題或說明，還沒送到 YouTube",
     test: i => (i.yt_pending || []).length > 0 },
   { key: "short", level: "yellow", label: "會變成 Shorts", tip: "直式（相機直拿）而且 3 分鐘以內，YouTube 會歸到 Shorts",
@@ -776,7 +795,8 @@ function render(opts = {}) {
       <td class="title">${(() => {  // display only: titles are edited in the panel on the right
         const warn = it.title_date_mismatch && !["uploading", "merging", "uploaded", "partial"].includes(it.status);
         return `<span class="t ${it.title_locked ? "locked" : ""} ${warn ? "mismatch" : ""}"
-          ${warn ? `title="⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同"` : ""}>${esc(it.title)}</span>`;
+          ${warn ? `title="⚠ 標題裡的日期跟拍攝時間（${esc(it.local.slice(0, 10))}）不同"`
+            : it.video_ids?.length > 1 && it.yt ? `title="${esc(`YouTube 上是 ${it.video_ids.length} 支：\n` + it.yt.map(y => y.title || "").join("\n"))}"` : ""}>${esc(rowTitle(it))}</span>`;
       })()}<span class="fn" title="${esc(it.folder)}">${esc(it.files.join(" + "))}${it.files.length > 1 ? `（${it.files.length} 段）` : ""}${it.scan_errors.length ? ` <span title="${esc(it.scan_errors.join("\n"))}">⚠</span>` : ""}${["uploaded", "partial"].includes(it.status) && !it.yt
         ? ' <span class="tag suspect" title="還沒從 YouTube 讀過這支影片的資料，這裡顯示的是上傳當時的標題；在 Studio 改過的話會不一樣。登入 YouTube 後重新掃描就會讀取。">⚠ 上傳時的標題</span>' : ""}</span></td>
       <td>${it.time_suspect && it.date_uncertain ? `<span class="tag suspect" title="相機時鐘重設過；前後錄影的日期不同，先用 ${esc(it.date_guess)}，請確認">⚠ 日期不確定</span>`
@@ -1246,7 +1266,7 @@ function prevPlace(it) {  // the nearest row above with a place
 function ytBox(it) {
   const row = (k, v) => `<div><span class="hint">${k}</span><span>${v}</span></div>`;
   const when = it.yt_checked ? it.yt_checked.replace("T", " ") : "";
-  return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上的資料${it.yt.length > 1 ? `（第 ${n + 1} 段）` : ""}</b>
+  return it.yt.map((y, n) => `<section class="grp yt"><div class="gh"><b>YouTube 上的資料${it.yt.length > 1 ? `（${NUM(n)} 第 ${n + 1} 支，共 ${it.yt.length} 支）` : ""}</b>
       <span class="hint" style="margin-left:auto">${when} 讀取</span>
       ${n === 0 ? '<button class="mini btnYtRefresh" style="margin-left:6px" title="在 Studio 改完後，按這裡讀取 YouTube 上最新的資料">↻ 重新讀取</button>' : ""}</div>
     ${y.missing ? '<div class="hint warn">YouTube 上找不到這支影片（可能已刪除）。可以重新勾選上傳。</div>' : `
@@ -1547,16 +1567,26 @@ $("#fxClose").onclick = () => $("#dlgFix").close();
 $("#dlgFix").addEventListener("cancel", e => { if (fxRunning) e.preventDefault(); });
 
 const V_ICON = { ok: "✓", bad: "✗", warn: "⚠", info: "ℹ" };
-$("#btnVerify").onclick = async () => {
+async function runVerify() {
   busy("核對中…");
   let res;
   try { res = await call("verify"); } finally { busy(null); }
-  $("#vList").innerHTML = res.checks.map(c => `<div class="vcheck"><span class="ic ${c.level}">${V_ICON[c.level]}</span><span>${esc(c.text)}</span>
+  $("#vList").innerHTML = res.checks.map((c, k) => `<div class="vcheck"><span class="ic ${c.level}">${V_ICON[c.level]}</span><span>${esc(c.text)}
+    ${c.action ? `<button class="vact" data-k="${k}">${esc(c.action.label)}</button>` : ""}</span>
     ${c.rows.length ? `<details ${c.rows.length <= 5 ? "open" : ""}><summary>${c.rows.length} 筆</summary>${c.rows.map(r =>
       `<div>${r.url ? `<a class="ext" href="${esc(r.url)}" target="_blank">${esc(r.label)} ↗</a>` : esc(r.label)}${r.note ? `：${esc(r.note)}` : ""}</div>`).join("")}</details>` : ""}</div>`).join("");
+  $("#vList").querySelectorAll("button.vact").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    busy("處理中…");
+    let r;
+    try { r = await call(res.checks[b.dataset.k].action.call); } finally { busy(null); }
+    if (r && r.ok === false) { alert(r.error); b.disabled = false; return; }
+    runVerify();  // check again, so the result shows what is true now
+  });
   setPlan(res.plan);
-  $("#dlgVerify").showModal();
-};
+  if (!$("#dlgVerify").open) $("#dlgVerify").showModal();
+}
+$("#btnVerify").onclick = runVerify;
 $("#vClose").onclick = () => $("#dlgVerify").close();
 
 $("#btnSignIn").onclick = async () => {
