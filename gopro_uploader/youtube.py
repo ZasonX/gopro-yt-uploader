@@ -88,9 +88,11 @@ def sign_out():
         os.remove(_token_path())
 
 
-def get_service(interactive: bool = True):
+def get_service(interactive: bool = True, force: bool = False):
+    """force: always sign in in the browser (登入 / 切換帳號); the saved token is replaced only
+    when that succeeds, so a cancelled or timed-out sign-in keeps the current one."""
     creds = None
-    if os.path.exists(_token_path()):
+    if os.path.exists(_token_path()) and not force:
         creds = Credentials.from_authorized_user_file(_token_path(), SCOPES)
     if creds and creds.refresh_token and (creds.expired or not interactive):
         # Always try a refresh on a silent start: an access token can look valid

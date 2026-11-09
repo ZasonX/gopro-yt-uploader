@@ -1671,3 +1671,39 @@ def test_browser_sign_in_can_be_cancelled_and_times_out(monkeypatch):
         youtube._browser_sign_in(_FakeFlow(), timeout=10, open_browser=lambda url, new=0: youtube.cancel_sign_in())
     with pytest.raises(youtube.SignInCancelled, match="還沒完成登入"):
         youtube._browser_sign_in(_FakeFlow(), timeout=1, open_browser=lambda url, new=0: None)
+
+
+def test_switch_account_keeps_the_current_sign_in_until_the_new_one_works(monkeypatch, tmp_path):
+    import pytest
+    from gopro_uploader import youtube
+    from gopro_uploader.app import Api
+    token = tmp_path / "token.json"
+    token.write_text("old")
+    monkeypatch.setattr(youtube, "_token_path", lambda: str(token))
+    monkeypatch.setattr(youtube, "has_client_secret", lambda: True)
+    monkeypatch.setattr(youtube.InstalledAppFlow, "from_client_secrets_file", lambda *a: object())
+    started, release = threading.Event(), threading.Event()
+    opened = []
+
+    def browser(flow):
+        opened.append(1)
+        started.set()
+        release.wait(5)
+        raise youtube.SignInCancelled("已取消登入")
+    monkeypatch.setattr(youtube, "_browser_sign_in", browser)
+    monkeypatch.setattr(youtube, "reopen_sign_in", lambda: opened.append("reopen") or True)
+    monkeypatch.setattr(youtube, "channel_title", lambda yt: "舊頻道")
+    api = Api("unused.log")
+    api._yt = "old service"
+    names = []
+    first = threading.Thread(target=lambda: pytest.raises(youtube.SignInCancelled, api.sign_in))
+    first.start()
+    started.wait(5)
+    second = threading.Thread(target=lambda: names.append(api.sign_in()))
+    second.start()
+    time.sleep(0.2)
+    release.set()  # the user cancels
+    first.join(5), second.join(5)
+    assert opened == [1, "reopen"]  # pressing 登入 again reopened the waiting page, no second sign-in
+    assert api._yt == "old service" and token.read_text() == "old"  # still signed in as before
+    assert names == ["舊頻道"]  # the second press gets whatever the waiting sign-in left

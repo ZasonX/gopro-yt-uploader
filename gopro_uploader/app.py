@@ -111,6 +111,7 @@ class Api:
         self._window = None
         # a browser sign-in waiting: the window shows 重新開啟登入頁 / 取消
         youtube.on_sign_in_wait = lambda waiting: self._emit("signin_wait", waiting=waiting)
+        self._signin_lock = threading.Lock()  # one browser sign-in at a time
         self._log_file = log_file
         self._settings = Settings.load()
         self._store = Store()
@@ -917,10 +918,17 @@ class Api:
     def _signed_in(self):
         """A working service, opening the browser sign-in when needed."""
         if not self._yt:
-            self._say("請在跳出的瀏覽器頁面登入 YouTube…")
-            self._yt = youtube.get_service(interactive=True)
-            self._told_signed_out = False
-            self._emit("channel", name=youtube.channel_title(self._yt))
+            if not self._signin_lock.acquire(blocking=False):
+                youtube.reopen_sign_in()  # a sign-in already waits: use that one, don't open a second
+                self._signin_lock.acquire()
+            try:
+                if not self._yt:  # the one we waited for may have signed in
+                    self._say("請在跳出的瀏覽器頁面登入 YouTube…")
+                    self._yt = youtube.get_service(interactive=True)
+                    self._told_signed_out = False
+                    self._emit("channel", name=youtube.channel_title(self._yt))
+            finally:
+                self._signin_lock.release()
         return self._yt
 
     def _with_sign_in(self, fn):
@@ -1178,10 +1186,23 @@ class Api:
         return True
 
     def sign_in(self):
-        youtube.sign_out()  # 登入 / 重新登入 / 切換帳號 always go through the browser
-        self._forget_channel()
-        self._yt = youtube.get_service(interactive=True)
-        self._told_signed_out = False
+        """登入 / 重新登入 / 切換帳號 always go through the browser. Only one sign-in at a time:
+        pressing it again while one waits opens that page again. The current sign-in stays
+        until the new one succeeds."""
+        if not self._signin_lock.acquire(blocking=False):
+            youtube.reopen_sign_in()
+            with self._signin_lock:
+                pass
+            if not self._yt:
+                raise RuntimeError("登入沒有完成")
+            return youtube.channel_title(self._yt)
+        try:
+            yt = youtube.get_service(interactive=True, force=True)
+            self._forget_channel()
+            self._yt = yt
+            self._told_signed_out = False
+        finally:
+            self._signin_lock.release()
         name = youtube.channel_title(self._yt)
         self._say(f"已登入 YouTube 頻道：{name}")
         return name
