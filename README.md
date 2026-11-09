@@ -64,6 +64,7 @@ Mac / Linux 版是照 Windows 版改的：檔案總管換成 Finder / 系統的�
 
 > 專案停在「測試中」狀態時，登入大約 7 天就會過期，到時候程式會請你重新登入一次。
 > 不想每週重登的話，可以在「目標對象」按「發布應用程式」。這只是改變你自己這個專案的狀態，不會把程式或影片公開給別人。之後登入時會出現「Google 尚未驗證這個應用程式」的警告，按「進階 → 繼續」即可。
+> 按鈕不能按時，是「品牌」頁還缺網址：應用程式首頁填 `https://github.com/ZasonX/gopro-yt-uploader`，隱私權政策填 `https://github.com/ZasonX/gopro-yt-uploader/blob/main/PRIVACY.md`（這個程式的[隱私權政策](PRIVACY.md)），授權網域加 `github.com`，然後儲存。不要上傳標誌，上傳標誌就要送 Google 審查。
 
 ### 3. 建立用戶端憑證
 

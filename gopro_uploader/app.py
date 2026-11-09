@@ -109,6 +109,8 @@ def by_log(logs_dir: str, by_vid: dict, by_files: dict, by_title: dict | None = 
 class Api:
     def __init__(self, log_file: str):
         self._window = None
+        # a browser sign-in waiting: the window shows 重新開啟登入頁 / 取消
+        youtube.on_sign_in_wait = lambda waiting: self._emit("signin_wait", waiting=waiting)
         self._log_file = log_file
         self._settings = Settings.load()
         self._store = Store()
@@ -1183,6 +1185,13 @@ class Api:
         name = youtube.channel_title(self._yt)
         self._say(f"已登入 YouTube 頻道：{name}")
         return name
+
+    def reopen_sign_in(self):
+        return youtube.reopen_sign_in()
+
+    def cancel_sign_in(self):
+        youtube.cancel_sign_in()
+        return True
 
     def sign_out(self):
         youtube.sign_out()

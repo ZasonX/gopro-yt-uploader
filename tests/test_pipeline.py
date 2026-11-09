@@ -1626,3 +1626,48 @@ def test_what_this_app_did_to_hand_uploads_is_found_in_old_logs(tmp_path):
     assert got == {"fp1": {"pushed": "2025-04-01T10:00"}, "fp2": {"pushed": "2025-04-01T10:00"},
                    "fp3": {"fixed": "2025-04-01T10:05"}}
     assert by_log(str(tmp_path / "none"), {}, {}) == {}
+
+
+class _FakeFlow:
+    def __init__(self):
+        self.got = None
+        self.credentials = "CREDS"
+
+    def authorization_url(self):
+        return "https://accounts.example.test/auth", "state"
+
+    def fetch_token(self, authorization_response):
+        self.got = authorization_response
+
+
+def test_browser_sign_in_ignores_stray_requests_and_can_be_reopened(monkeypatch):
+    import threading
+    import urllib.request
+    from gopro_uploader import youtube
+    waits, opened = [], []
+    monkeypatch.setattr(youtube, "on_sign_in_wait", waits.append)
+    monkeypatch.setattr(youtube.webbrowser, "open", lambda url, new=0: opened.append(url))
+    flow = _FakeFlow()
+
+    def browser(url, new=0):  # the tab: a favicon first, then (after a reopen) Google's redirect
+        def go():
+            base = flow.redirect_uri
+            urllib.request.urlopen(base + "favicon.ico").read()
+            assert youtube.reopen_sign_in()
+            urllib.request.urlopen(base + "?state=state&code=abc").read()
+        threading.Thread(target=go, daemon=True).start()
+
+    assert youtube._browser_sign_in(flow, timeout=10, open_browser=browser) == "CREDS"
+    assert flow.got.startswith("https://localhost:") and "code=abc" in flow.got
+    assert opened == ["https://accounts.example.test/auth"] and waits == [True, False]
+    assert not youtube.reopen_sign_in()  # nothing waiting any more
+
+
+def test_browser_sign_in_can_be_cancelled_and_times_out(monkeypatch):
+    import pytest
+    from gopro_uploader import youtube
+    monkeypatch.setattr(youtube, "on_sign_in_wait", None)
+    with pytest.raises(youtube.SignInCancelled, match="已取消"):
+        youtube._browser_sign_in(_FakeFlow(), timeout=10, open_browser=lambda url, new=0: youtube.cancel_sign_in())
+    with pytest.raises(youtube.SignInCancelled, match="還沒完成登入"):
+        youtube._browser_sign_in(_FakeFlow(), timeout=1, open_browser=lambda url, new=0: None)

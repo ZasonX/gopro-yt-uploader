@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import time
+import webbrowser
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -113,11 +114,65 @@ def get_service(interactive: bool = True):
             log.error("client_secret.json looks missing: %s", _secret_diagnosis())
             raise RuntimeError(f"找不到 client_secret.json（{client_secret_path()}）")
         flow = InstalledAppFlow.from_client_secrets_file(client_secret_path(), SCOPES)
-        creds = flow.run_local_server(port=0, open_browser=True,
-                                      success_message="登入完成，可以關閉這個分頁回到程式。")
+        creds = _browser_sign_in(flow)
     with open(_token_path(), "w", encoding="utf-8") as f:
         f.write(creds.to_json())
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+
+class SignInCancelled(RuntimeError):
+    """The browser sign-in was cancelled in the app or took too long."""
+
+
+SIGN_IN_TIMEOUT = 600  # s: a closed sign-in tab must not leave the app waiting for ever
+on_sign_in_wait = None  # set by the app: called with True while a browser sign-in waits, then False
+_sign_in = {"url": "", "stop": False}
+
+
+def reopen_sign_in() -> bool:
+    """Open the waiting sign-in page again (e.g. its tab was closed)."""
+    if _sign_in["url"]:
+        webbrowser.open(_sign_in["url"], new=1)
+    return bool(_sign_in["url"])
+
+
+def cancel_sign_in() -> None:
+    _sign_in["stop"] = True
+
+
+def _browser_sign_in(flow, timeout: float = SIGN_IN_TIMEOUT, open_browser=webbrowser.open):
+    """InstalledAppFlow.run_local_server, but it can be cancelled, its page opened again,
+    and it gives up after `timeout`; stray requests (favicon…) don't end it."""
+    import wsgiref.simple_server
+    from google_auth_oauthlib import flow as lib  # its redirect app and handler, as run_local_server uses
+    app = lib._RedirectWSGIApp("登入完成，可以關閉這個分頁回到程式。")
+    # the exclusive server keeps other programs off the port on Windows
+    server_class = getattr(lib, "_ExclusiveWSGIServer", wsgiref.simple_server.WSGIServer)
+    server = wsgiref.simple_server.make_server("localhost", 0, app, server_class=server_class,
+                                               handler_class=lib._WSGIRequestHandler)
+    server.timeout = 0.5
+    try:
+        flow.redirect_uri = f"http://localhost:{server.server_port}/"
+        url, _ = flow.authorization_url()
+        _sign_in.update(url=url, stop=False)
+        if on_sign_in_wait:
+            on_sign_in_wait(True)
+        open_browser(url, new=1)
+        end = time.monotonic() + timeout
+        while not (app.last_request_uri and ("code=" in app.last_request_uri or "error=" in app.last_request_uri)):
+            if _sign_in["stop"]:
+                raise SignInCancelled("已取消登入")
+            if time.monotonic() > end:
+                raise SignInCancelled(f"等了 {timeout // 60:.0f} 分鐘還沒完成登入，已取消；可以再按一次登入")
+            server.handle_request()
+        # oauthlib insists on https, even for the local redirect
+        flow.fetch_token(authorization_response=app.last_request_uri.replace("http", "https", 1))
+        return flow.credentials
+    finally:
+        server.server_close()
+        _sign_in.update(url="", stop=False)
+        if on_sign_in_wait:
+            on_sign_in_wait(False)
 
 
 def channel_title(yt) -> str:
