@@ -1730,7 +1730,10 @@ def main():
 
     def closing():  # runs on the GUI thread; False keeps the window open
         question = api.close_question()
-        return question is None or _ask_yes_no(window, question)
+        ok = question is None or _ask_yes_no(window, question)
+        if ok:
+            log.info("視窗關閉")
+        return ok
 
     window.events.closing += closing
     webview.start(http_server=True, debug="--debug" in sys.argv)

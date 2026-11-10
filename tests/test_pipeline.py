@@ -1707,3 +1707,22 @@ def test_switch_account_keeps_the_current_sign_in_until_the_new_one_works(monkey
     assert opened == [1, "reopen"]  # pressing 登入 again reopened the waiting page, no second sign-in
     assert api._yt == "old service" and token.read_text() == "old"  # still signed in as before
     assert names == ["舊頻道"]  # the second press gets whatever the waiting sign-in left
+
+
+@pytest.mark.parametrize("ending, expect", [
+    ("pass", "程式結束"),
+    ("t = threading.Thread(target=lambda: 1 / 0, name='worker'); t.start(); t.join()", "執行緒 worker 未處理的錯誤"),
+    ("import faulthandler; faulthandler._sigsegv()", "Fatal Python error"),
+])
+def test_every_run_says_in_its_log_how_it_ended(tmp_path, ending, expect):
+    import subprocess
+    import sys
+    log = tmp_path / "run.log"
+    code = ("import logging, threading, sys\n"
+            "from gopro_uploader import store\n"
+            "logging.basicConfig(level=logging.INFO, handlers=[logging.FileHandler(sys.argv[1], encoding='utf-8')])\n"
+            "store.log_exits(sys.argv[1])\n" + ending + "\n")
+    subprocess.run([sys.executable, "-c", code, str(log)], cwd=os.path.dirname(os.path.dirname(__file__)),
+                   capture_output=True, timeout=60)
+    text = log.read_text(encoding="utf-8", errors="replace")
+    assert "程式啟動" in text and expect in text

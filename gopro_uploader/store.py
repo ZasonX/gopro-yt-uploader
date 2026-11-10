@@ -148,4 +148,36 @@ def setup_logging() -> str:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # the OAuth helper logs the sign-in URL and the one-time auth code; keep those out of logs
     logging.getLogger("google_auth_oauthlib").setLevel(logging.WARNING)
+    log_exits(log_file)
     return log_file
+
+
+_crash_file = None  # kept open: faulthandler writes to it from inside a crash
+
+
+def log_exits(log_file: str) -> None:
+    """Make the end of every run show in its log: a normal exit says 程式結束; an uncaught
+    error (any thread) and a hard crash (faulthandler: access violation…) leave a traceback.
+    A log that just stops was killed from outside (Task Manager, Windows)."""
+    global _crash_file
+    import atexit
+    import faulthandler
+    log = logging.getLogger("app")
+
+    def uncaught(kind, value, tb):
+        log.critical("未處理的錯誤，程式結束", exc_info=(kind, value, tb))
+
+    def uncaught_thread(args):
+        if args.exc_type is not SystemExit:
+            log.critical("執行緒 %s 未處理的錯誤", getattr(args.thread, "name", "?"),
+                         exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    sys.excepthook = uncaught
+    threading.excepthook = uncaught_thread
+    try:
+        _crash_file = open(log_file, "a", encoding="utf-8")
+        faulthandler.enable(file=_crash_file, all_threads=True)
+    except (OSError, ValueError, RuntimeError):  # no usable file descriptor: skip it
+        _crash_file = None
+    log.info("程式啟動（PID %s）", os.getpid())
+    atexit.register(lambda: log.info("程式結束"))

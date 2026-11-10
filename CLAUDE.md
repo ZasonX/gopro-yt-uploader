@@ -20,6 +20,7 @@ Read first when picking this up:
 - OS-specific code: `taskbar.py` is Windows-only and a no-op elsewhere; `app.reveal_command` / `open_with_default_app` use Explorer / `os.startfile`, `open -R` / `open`, `xdg-open`; the close question is a Win32 MessageBox, else pywebview's confirmation dialog; app data is `%APPDATA%`, `~/Library/Application Support`, or `$XDG_DATA_HOME` / `~/.local/share`. Linux gets pywebview's Qt backend from pip (`pywebview[qt]`).
 - `.venv` is Python 3.10 (google-api-core warns 3.10 is unsupported; works, upgrade later).
 - No system ffmpeg/ffprobe/exiftool. Metadata is parsed in pure Python. Chapter merging uses the ffmpeg binary bundled in the `imageio-ffmpeg` pip package.
+- Each run's log (`logs/` in app data) starts with 程式啟動 and ends with 視窗關閉 / 程式結束, or a traceback (`store.log_exits`: excepthooks + faulthandler into the same file). A log that just stops means the process was killed from outside.
 - Set `GOPRO_YT_HOME=<dir>` to redirect app data (settings, OAuth token, state, logs) away from the default app data folder. Tests do this automatically.
 
 ## Architecture (`gopro_uploader/`)
